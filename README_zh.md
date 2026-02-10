@@ -18,6 +18,8 @@
 - **模式匹配**: 支持通配符 `*`（单层）和 `**`（多层）
 - **简洁 API**: `ForSync()` / `ForAsync()` / `ForFlow()`
 - **包级便捷 API**: `beat.On()` / `beat.Emit()` 零配置直接使用（Sync 语义）
+- **消息框架**: Publisher/Subscriber 接口 + Router 路由 + 中间件链 + JSON 序列化 — 仍然零外部依赖
+- **本地/远程统一**: `pubsub/local` 桥接 beat 引擎，外置适配器可扩展 Kafka/NATS/Redis 等
 
 ## 性能对比
 
@@ -246,6 +248,30 @@ beat/
 ├── core/                     # 核心接口（零依赖）
 │   ├── interfaces.go        # Bus / Event / Handler 接口
 │   └── matcher.go           # TrieMatcher 通配符匹配
+├── message/                  # 消息框架核心类型
+│   ├── message.go           # Message 传输单元（UUID / Ack / Nack）
+│   ├── metadata.go          # Metadata 元数据
+│   ├── publisher.go         # Publisher 接口
+│   ├── subscriber.go        # Subscriber 接口
+│   └── uuid.go              # 零依赖 UUID v4 生成
+├── router/                   # 消息路由器
+│   ├── router.go            # Router 调度中心 + 消息循环
+│   ├── handler.go           # HandlerFunc / Priority / Handler
+│   ├── middleware.go        # Middleware 类型定义
+│   └── plugin.go            # RouterPlugin 生命周期钩子
+├── pubsub/
+│   └── local/               # 基于 beat 引擎的本地 Pub/Sub
+│       ├── publisher.go     # beat Bus → message.Publisher
+│       └── subscriber.go    # beat Bus → message.Subscriber
+├── middleware/               # 消息中间件
+│   ├── retry/               # 指数退避重试
+│   ├── timeout/             # 消息处理超时
+│   ├── recoverer/           # panic → error 恢复
+│   ├── logging/             # slog 日志
+│   └── correlation/         # correlation_id 传播
+├── marshal/                  # 序列化
+│   ├── marshaler.go         # Marshaler 接口
+│   └── json.go              # JSON 实现
 ├── internal/
 │   ├── impl/                # 实现层（三预设）
 │   │   ├── sync/           # Sync: 同步直调 + CoW
@@ -375,6 +401,106 @@ bus.On("data.raw", func(e *beat.Event) error {
 for record := range dataStream {
     bus.Emit(&beat.Event{Type: "data.raw", Data: record})
 }
+```
+
+## 消息框架
+
+beat 消息框架在高性能事件总线之上提供 **Publisher/Subscriber 接口**、**Router 路由**、**中间件链** 和 **JSON 序列化**，面向跨服务的可靠消息传递场景。
+
+### Publisher / Subscriber（本地）
+
+```go
+import (
+    "context"
+    "github.com/uniyakcom/beat"
+    "github.com/uniyakcom/beat/message"
+    "github.com/uniyakcom/beat/pubsub/local"
+)
+
+bus, _ := beat.ForSync()
+defer bus.Close()
+
+pub := local.NewPublisher(bus)   // 包装为 message.Publisher
+sub := local.NewSubscriber(bus)  // 包装为 message.Subscriber
+
+ctx := context.Background()
+msgCh, _ := sub.Subscribe(ctx, "order.created")
+
+go func() {
+    for msg := range msgCh {
+        fmt.Printf("收到订单: %s\n", string(msg.Payload))
+        msg.Ack()
+    }
+}()
+
+pub.Publish("order.created", message.NewMessage("", []byte(`{"id":123}`)))
+```
+
+### Router 路由
+
+```go
+import (
+    "github.com/uniyakcom/beat/message"
+    "github.com/uniyakcom/beat/pubsub/local"
+    "github.com/uniyakcom/beat/router"
+)
+
+r := router.NewRouter()
+
+// beat 风格：On() 订阅处理
+r.On("notify", "order.created", sub, func(msg *message.Message) error {
+    sendEmail(msg.Payload)
+    return nil
+})
+
+// 管道风格：subscribe → process → publish
+r.AddHandler(
+    "transform",
+    "raw.data", inSub,
+    "processed.data", outPub,
+    func(msg *message.Message) ([]*message.Message, error) {
+        result := transform(msg.Payload)
+        return []*message.Message{message.NewMessage("", result)}, nil
+    },
+)
+
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+r.Run(ctx)
+```
+
+### 中间件
+
+```go
+import (
+    "github.com/uniyakcom/beat/middleware/retry"
+    "github.com/uniyakcom/beat/middleware/timeout"
+    "github.com/uniyakcom/beat/middleware/recoverer"
+    "github.com/uniyakcom/beat/middleware/logging"
+    "github.com/uniyakcom/beat/middleware/correlation"
+)
+
+r := router.NewRouter()
+
+// 全局中间件（洋葱模型）
+r.AddMiddleware(
+    recoverer.New(),                         // panic → error
+    correlation.New(),                       // 自动传播 correlation_id
+    logging.New(slog.Default()),             // 处理耗时日志
+    timeout.New(5 * time.Second),            // 消息处理超时
+    retry.New(retry.Config{MaxRetries: 3}),  // 指数退避重试
+)
+```
+
+### JSON 序列化
+
+```go
+import "github.com/uniyakcom/beat/marshal"
+
+m := marshal.JSONMarshaler{}
+
+data, _ := m.Marshal("topic", msg)     // Message → []byte
+restored, _ := m.Unmarshal("topic", data)  // []byte → Message
 ```
 
 ## 最佳实践

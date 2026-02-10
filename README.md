@@ -18,6 +18,8 @@ High-performance Go event bus — three paradigms, zero allocation, zero CAS, ze
 - **Pattern Matching**: Wildcard `*` (single level) and `**` (multi-level)
 - **Simple API**: `ForSync()` / `ForAsync()` / `ForFlow()`
 - **Package-Level API**: `beat.On()` / `beat.Emit()` zero-config direct use (Sync semantics)
+- **Message Framework**: Publisher/Subscriber interfaces + Router + Middleware chain + JSON marshaling — still zero dependencies
+- **Local/Remote Unified**: `pubsub/local` bridges beat engine; external adapters extend to Kafka/NATS/Redis etc.
 
 ## Performance Comparison
 
@@ -247,6 +249,30 @@ beat/
 ├── core/                     # Core interfaces (zero deps)
 │   ├── interfaces.go        # Bus / Event / Handler
 │   └── matcher.go           # TrieMatcher wildcard matching
+├── message/                  # Message framework core types
+│   ├── message.go           # Message unit (UUID / Ack / Nack)
+│   ├── metadata.go          # Metadata map
+│   ├── publisher.go         # Publisher interface
+│   ├── subscriber.go        # Subscriber interface
+│   └── uuid.go              # Zero-dep UUID v4 generation
+├── router/                   # Message router
+│   ├── router.go            # Router dispatch + message loop
+│   ├── handler.go           # HandlerFunc / Priority / Handler
+│   ├── middleware.go        # Middleware type definition
+│   └── plugin.go            # RouterPlugin lifecycle hooks
+├── pubsub/
+│   └── local/               # Local Pub/Sub via beat engine
+│       ├── publisher.go     # beat Bus → message.Publisher
+│       └── subscriber.go    # beat Bus → message.Subscriber
+├── middleware/               # Message middleware
+│   ├── retry/               # Exponential backoff retry
+│   ├── timeout/             # Message processing timeout
+│   ├── recoverer/           # Panic → error recovery
+│   ├── logging/             # slog logging
+│   └── correlation/         # correlation_id propagation
+├── marshal/                  # Serialization
+│   ├── marshaler.go         # Marshaler interface
+│   └── json.go              # JSON implementation
 ├── internal/
 │   ├── impl/                # Implementation layer (three paradigms)
 │   │   ├── sync/           # Sync: direct call + CoW
@@ -376,6 +402,106 @@ bus.On("data.raw", func(e *beat.Event) error {
 for record := range dataStream {
     bus.Emit(&beat.Event{Type: "data.raw", Data: record})
 }
+```
+
+## Message Framework
+
+The beat message framework provides **Publisher/Subscriber interfaces**, **Router**, **Middleware chain**, and **JSON marshaling** on top of the high-performance event bus, targeting reliable cross-service message delivery.
+
+### Publisher / Subscriber (Local)
+
+```go
+import (
+    "context"
+    "github.com/uniyakcom/beat"
+    "github.com/uniyakcom/beat/message"
+    "github.com/uniyakcom/beat/pubsub/local"
+)
+
+bus, _ := beat.ForSync()
+defer bus.Close()
+
+pub := local.NewPublisher(bus)   // wraps as message.Publisher
+sub := local.NewSubscriber(bus)  // wraps as message.Subscriber
+
+ctx := context.Background()
+msgCh, _ := sub.Subscribe(ctx, "order.created")
+
+go func() {
+    for msg := range msgCh {
+        fmt.Printf("Order: %s\n", string(msg.Payload))
+        msg.Ack()
+    }
+}()
+
+pub.Publish("order.created", message.NewMessage("", []byte(`{"id":123}`)))
+```
+
+### Router
+
+```go
+import (
+    "github.com/uniyakcom/beat/message"
+    "github.com/uniyakcom/beat/pubsub/local"
+    "github.com/uniyakcom/beat/router"
+)
+
+r := router.NewRouter()
+
+// beat-style: On() subscribe and handle
+r.On("notify", "order.created", sub, func(msg *message.Message) error {
+    sendEmail(msg.Payload)
+    return nil
+})
+
+// Pipeline: subscribe → process → publish
+r.AddHandler(
+    "transform",
+    "raw.data", inSub,
+    "processed.data", outPub,
+    func(msg *message.Message) ([]*message.Message, error) {
+        result := transform(msg.Payload)
+        return []*message.Message{message.NewMessage("", result)}, nil
+    },
+)
+
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+r.Run(ctx)
+```
+
+### Middleware
+
+```go
+import (
+    "github.com/uniyakcom/beat/middleware/retry"
+    "github.com/uniyakcom/beat/middleware/timeout"
+    "github.com/uniyakcom/beat/middleware/recoverer"
+    "github.com/uniyakcom/beat/middleware/logging"
+    "github.com/uniyakcom/beat/middleware/correlation"
+)
+
+r := router.NewRouter()
+
+// Global middleware (onion model)
+r.AddMiddleware(
+    recoverer.New(),                         // panic → error
+    correlation.New(),                       // auto-propagate correlation_id
+    logging.New(slog.Default()),             // processing duration logs
+    timeout.New(5 * time.Second),            // message processing timeout
+    retry.New(retry.Config{MaxRetries: 3}),  // exponential backoff retry
+)
+```
+
+### JSON Marshaling
+
+```go
+import "github.com/uniyakcom/beat/marshal"
+
+m := marshal.JSONMarshaler{}
+
+data, _ := m.Marshal("topic", msg)         // Message → []byte
+restored, _ := m.Unmarshal("topic", data)  // []byte → Message
 ```
 
 ## Best Practices
