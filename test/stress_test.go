@@ -382,7 +382,6 @@ func TestStressBatchEmit(t *testing.T) {
 	}
 
 	bus, _ := beat.ForFlow()
-	defer bus.Close()
 
 	var processed int64
 	bus.On("batch.stress", func(e *beat.Event) error {
@@ -403,6 +402,10 @@ func TestStressBatchEmit(t *testing.T) {
 		}
 		bus.EmitBatch(events)
 	}
+
+	// Flow bus 是异步的，EmitBatch 只是推入环形缓冲区
+	// 需要 GracefulClose 等待所有事件消费完毕后再断言
+	bus.GracefulClose(10 * time.Second)
 
 	duration := time.Since(start)
 

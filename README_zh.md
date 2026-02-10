@@ -12,7 +12,7 @@
 - **零外部依赖**: 纯标准库实现，`go.mod` 无任何第三方 require
 - **三预设架构**: Sync (同步直调) / Async (Per-P SPSC) / Flow (Pipeline 流处理)
 - **零分配 Emit**: 全部三预设 0 B/op, 0 allocs/op
-- **极致性能**: Async 高并发 26 ns/op (38M ops/s), Sync 单线程 10.5 ns/op (95M ops/s)
+- **极致性能**: Async 高并发 27 ns/op (37M ops/s), Sync 单线程 10.4 ns/op (96M ops/s)
 - **零 CAS 热路径**: Per-P SPSC ring，atomic Load/Store only (≈ 普通 MOV)
 - **并发安全**: RCU 订阅管理 + CoW 快照
 - **模式匹配**: 支持通配符 `*`（单层）和 `**`（多层）
@@ -26,21 +26,35 @@ cd _benchmarks
 go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
 ```
 
-### Windows 10 — Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
+### Windows 11 — Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
+
+数据来源：[benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt)
 
 | 场景 | beat (Sync) | beat (Async) | EventBus | ×倍 | gookit/event | ×倍 |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|
-| **单 handler** | **11 ns** 0 alloc | 37 ns 0 alloc | 190 ns 0 alloc | **17×** | 581 ns 2 alloc | **53×** |
-| **10 handler** | **26 ns** 0 alloc | 34 ns 0 alloc | 1690 ns 1 alloc | **65×** | 671 ns 2 alloc | **26×** |
-| **高并发** | 29 ns 0 alloc | **27 ns** 0 alloc | 255 ns 0 alloc | **9×** | 194 ns 2 alloc | **7×** |
+| **单 handler** | **11 ns** 0 alloc | 38 ns 0 alloc | 190 ns 0 alloc | **17×** | 609 ns 2 alloc | **55×** |
+| **10 handler** | **26 ns** 0 alloc | 34 ns 0 alloc | 1663 ns 1 alloc | **64×** | 717 ns 2 alloc | **28×** |
+| **高并发** | 28 ns 0 alloc | **27 ns** 0 alloc | 261 ns 0 alloc | **10×** | 201 ns 2 alloc | **7×** |
 
-### Alibaba Cloud Linux — Intel Xeon Platinum @ 2.50GHz (2C/2T, KVM)
+### Alibaba Cloud Linux — Intel Xeon Platinum @ 2.50GHz (1C/2T, 2 vCPU, KVM)
+
+数据来源：[benchmarks_linux_1c2t_2vc.txt](benchmarks_linux_1c2t_2vc.txt)
 
 | 场景 | beat (Sync) | beat (Async) | EventBus | ×倍 | gookit/event | ×倍 |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|
-| **单 handler** | **12 ns** 0 alloc | 30 ns 0 alloc | 140 ns 0 alloc | **11×** | 392 ns 2 alloc | **32×** |
-| **10 handler** | **19 ns** 0 alloc | 55 ns 0 alloc | 1216 ns 1 alloc | **63×** | 459 ns 2 alloc | **24×** |
-| **高并发** | **8.3 ns** 0 alloc | 30 ns 0 alloc | 175 ns 0 alloc | **21×** | 454 ns 2 alloc | **55×** |
+| **单 handler** | **10 ns** 0 alloc | 30 ns 0 alloc | 139 ns 0 alloc | **14×** | 392 ns 2 alloc | **39×** |
+| **10 handler** | **17 ns** 0 alloc | 55 ns 0 alloc | 1216 ns 1 alloc | **72×** | 460 ns 2 alloc | **27×** |
+| **高并发** | **11 ns** 0 alloc | 30 ns 0 alloc | 173 ns 0 alloc | **16×** | 455 ns 2 alloc | **41×** |
+
+### Alibaba Cloud Linux — Intel Xeon Platinum 8269CY @ 2.50GHz (2C/4T, 4 vCPU, KVM)
+
+数据来源：[benchmarks_linux_2c4t_4vc.txt](benchmarks_linux_2c4t_4vc.txt)
+
+| 场景 | beat (Sync) | beat (Async) | EventBus | ×倍 | gookit/event | ×倍 |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **单 handler** | **13 ns** 0 alloc | 35 ns 0 alloc | 184 ns 0 alloc | **14×** | 538 ns 2 alloc | **41×** |
+| **10 handler** | **29 ns** 0 alloc | 51 ns 0 alloc | 1647 ns 1 alloc | **57×** | 637 ns 2 alloc | **22×** |
+| **高并发** | **34 ns** 0 alloc | 51 ns 0 alloc | 220 ns 0 alloc | **6×** | 286 ns 2 alloc | **8×** |
 
 > ×倍 = beat 最优值 / 竞品，越高越快。**全场景零分配**，竞品每次 Emit 产生 1–2 次堆分配。
 >
@@ -121,9 +135,11 @@ func main() {
 
 | 预设 | 适用场景 | 单线程延迟 | 高并发吞吐 | error 返回 | 生命周期 |
 |------|----------|-----------|-----------|-----------|---------|
-| **Sync** | RPC 调用、权限校验、同步钩子 | **10.5 ns** | ~38 ns | ✅ | 无需 Close |
-| **Async** | 事件总线、日志聚合、实时推送 | 37 ns | **26 ns** | ❌ | 需 Close |
-| **Flow** | ETL 流处理、批量数据加载 | **48 ns** | — | ❌ | 需 Close |
+| **Sync** | RPC 调用、权限校验、同步钩子 | **10.4 ns** | ~36 ns | ✅ | 无需 Close |
+| **Async** | 事件总线、日志聚合、实时推送 | 41 ns | **27 ns** | ❌ | 需 Close |
+| **Flow** | ETL 流处理、批量数据加载 | **47 ns** | — | ❌ | 需 Close |
+
+> 延迟数据基于 Windows 11 (6C/12T)，三环境完整对比见[性能对比](#性能对比)
 
 ### API 快速参考
 
@@ -137,9 +153,9 @@ beat.Off(id)
 bus, _ := beat.New()        // ≥4 核 → Async，<4 核 → Sync
 
 // ===== 第一层：ForXxx() 三核心（推荐） =====
-bus, _ := beat.ForSync()    // 同步直调，~10.5ns/op
-bus, _ := beat.ForAsync()   // Per-P SPSC，~26ns/op 高并发
-bus, _ := beat.ForFlow()    // Pipeline 流处理，~48ns/op，批处理窗口
+bus, _ := beat.ForSync()    // 同步直调，~10.4ns/op
+bus, _ := beat.ForAsync()   // Per-P SPSC，~27ns/op 高并发
+bus, _ := beat.ForFlow()    // Pipeline 流处理，~47ns/op，批处理窗口
 
 // ===== 第二层：Scenario() 字符串配置 =====
 bus, _ := beat.Scenario("sync")
@@ -201,31 +217,6 @@ defer bus.Close()
 // 优雅关闭（等待队列清空或超时）
 bus.GracefulClose(5 * time.Second)
 ```
-
-## 性能基准
-
-测试环境：Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
-
-### 单线程性能
-
-```
-BenchmarkAllImpls_SingleProducer/Sync     10.42 ns/op    95.97 M/s    0 B/op    0 allocs/op
-BenchmarkAllImpls_SingleProducer/Async    37.41 ns/op    26.73 M/s    0 B/op    0 allocs/op
-BenchmarkAllImpls_SingleProducer/Flow     47.78 ns/op    20.94 M/s    0 B/op    0 allocs/op
-```
-
-### 高并发性能 (RunParallel, 1 handler)
-
-```
-BenchmarkImplAsyncHighConcurrency/Async   26.48 ns/op    37.77 M/s    0 B/op    0 allocs/op
-BenchmarkImplSyncHighConcurrency/Sync     38.37 ns/op    26.06 M/s    0 B/op    0 allocs/op
-```
-
-**关键指标**：
-- **Sync**: 单线程最快 (10.5ns)，高并发 CoW 无锁读亦表现优异 (~38ns)
-- **Async**: 高并发最快 (26ns)，零 CAS，Per-P SPSC ring
-- **零分配**: 全部三预设热路径 0 allocs/op
-- **可扩展**: Async 并发性能随核心数线性扩展
 
 ## 架构设计
 
@@ -463,17 +454,24 @@ go test -bench="BenchmarkImplFlow$" -benchtime=3s -cpuprofile=cpu.prof
 go tool pprof -top cpu.prof
 ```
 
+**关键指标**：
+
+| 指标 | Windows 11 (6C/12T) | Linux (1C/2T, 2 vCPU) | Linux (2C/4T, 4 vCPU) |
+|------|:---:|:---:|:---:|
+| **Sync 单线程** | 10.4 ns/op | 9.4 ns/op | 12.4 ns/op |
+| **Sync 高并发** | ~36 ns/op | ~156 ns/op | ~83 ns/op |
+| **Async 单线程** | 41 ns/op | 30 ns/op | 77 ns/op |
+| **Async 高并发** | 27 ns/op | 30 ns/op | 69 ns/op |
+| **Flow 单线程** | 47 ns/op | 53 ns/op | 58 ns/op |
+| **分配** | 0 allocs/op | 0 allocs/op | 0 allocs/op |
+
+- **零分配**: 全部三预设热路径 0 allocs/op
+- **可扩展**: Async 并发性能随核心数线性扩展
+
+
 ### 性能要求
 
-合并变更前必须验证 `-race` 通过且 benchmark 无退化（>10%）：
-
-测试环境：Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
-
-| 预设 | 单线程 | 高并发 | 分配 |
-|------|--------|--------|------|
-| **Sync** | ≤12 ns/op | ~38 ns/op | 0 allocs/op |
-| **Async** | ~37 ns/op | ≤28 ns/op | 0 allocs/op |
-| **Flow** | ~48 ns/op | — | 0 allocs/op |
+合并变更前必须验证 `-race` 通过且 benchmark 无退化（>10%）
 
 ## 许可证
 

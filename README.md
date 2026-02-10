@@ -12,7 +12,7 @@ High-performance Go event bus — three paradigms, zero allocation, zero CAS, ze
 - **Zero Dependencies**: Pure standard library, no third-party requires in `go.mod`
 - **Three Paradigms**: Sync (direct call) / Async (Per-P SPSC) / Flow (pipeline)
 - **Zero-Allocation Emit**: All three paradigms 0 B/op, 0 allocs/op
-- **Extreme Performance**: Async 26 ns/op high concurrency (38M ops/s), Sync 10.5 ns/op single-thread (95M ops/s)
+- **Extreme Performance**: Async 27 ns/op high concurrency (37M ops/s), Sync 10.4 ns/op single-thread (96M ops/s)
 - **Zero CAS Hot Path**: Per-P SPSC ring, atomic Load/Store only (≈ plain MOV on x86)
 - **Concurrency Safe**: RCU subscription management + CoW snapshots
 - **Pattern Matching**: Wildcard `*` (single level) and `**` (multi-level)
@@ -26,21 +26,35 @@ cd _benchmarks
 go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
 ```
 
-### Windows 10 — Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
+### Windows 11 — Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
+
+Data source: [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt)
 
 | Scenario | beat (Sync) | beat (Async) | EventBus | × | gookit/event | × |
 |----------|:---:|:---:|:---:|:---:|:---:|:---:|
-| **1 handler** | **11 ns** 0 alloc | 37 ns 0 alloc | 190 ns 0 alloc | **17×** | 581 ns 2 alloc | **53×** |
-| **10 handlers** | **26 ns** 0 alloc | 34 ns 0 alloc | 1690 ns 1 alloc | **65×** | 671 ns 2 alloc | **26×** |
-| **Parallel** | 29 ns 0 alloc | **27 ns** 0 alloc | 255 ns 0 alloc | **9×** | 194 ns 2 alloc | **7×** |
+| **1 handler** | **11 ns** 0 alloc | 38 ns 0 alloc | 190 ns 0 alloc | **17×** | 609 ns 2 alloc | **55×** |
+| **10 handlers** | **26 ns** 0 alloc | 34 ns 0 alloc | 1663 ns 1 alloc | **64×** | 717 ns 2 alloc | **28×** |
+| **Parallel** | 28 ns 0 alloc | **27 ns** 0 alloc | 261 ns 0 alloc | **10×** | 201 ns 2 alloc | **7×** |
 
-### Alibaba Cloud Linux — Intel Xeon Platinum @ 2.50GHz (2C/2T, KVM)
+### Alibaba Cloud Linux — Intel Xeon Platinum @ 2.50GHz (1C/2T, 2 vCPU, KVM)
+
+Data source: [benchmarks_linux_1c2t_2vc.txt](benchmarks_linux_1c2t_2vc.txt)
 
 | Scenario | beat (Sync) | beat (Async) | EventBus | × | gookit/event | × |
 |----------|:---:|:---:|:---:|:---:|:---:|:---:|
-| **1 handler** | **12 ns** 0 alloc | 30 ns 0 alloc | 140 ns 0 alloc | **11×** | 392 ns 2 alloc | **32×** |
-| **10 handlers** | **19 ns** 0 alloc | 55 ns 0 alloc | 1216 ns 1 alloc | **63×** | 459 ns 2 alloc | **24×** |
-| **Parallel** | **8.3 ns** 0 alloc | 30 ns 0 alloc | 175 ns 0 alloc | **21×** | 454 ns 2 alloc | **55×** |
+| **1 handler** | **10 ns** 0 alloc | 30 ns 0 alloc | 139 ns 0 alloc | **14×** | 392 ns 2 alloc | **39×** |
+| **10 handlers** | **17 ns** 0 alloc | 55 ns 0 alloc | 1216 ns 1 alloc | **72×** | 460 ns 2 alloc | **27×** |
+| **Parallel** | **11 ns** 0 alloc | 30 ns 0 alloc | 173 ns 0 alloc | **16×** | 455 ns 2 alloc | **41×** |
+
+### Alibaba Cloud Linux — Intel Xeon Platinum 8269CY @ 2.50GHz (2C/4T, 4 vCPU, KVM)
+
+Data source: [benchmarks_linux_2c4t_4vc.txt](benchmarks_linux_2c4t_4vc.txt)
+
+| Scenario | beat (Sync) | beat (Async) | EventBus | × | gookit/event | × |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **1 handler** | **13 ns** 0 alloc | 35 ns 0 alloc | 184 ns 0 alloc | **14×** | 538 ns 2 alloc | **41×** |
+| **10 handlers** | **29 ns** 0 alloc | 51 ns 0 alloc | 1647 ns 1 alloc | **57×** | 637 ns 2 alloc | **22×** |
+| **Parallel** | **34 ns** 0 alloc | 51 ns 0 alloc | 220 ns 0 alloc | **6×** | 286 ns 2 alloc | **8×** |
 
 > × = beat best / competitor (higher = faster). **Zero allocation in all scenarios**, while competitors allocate 1–2 times per Emit.
 >
@@ -122,9 +136,11 @@ func main() {
 
 | Paradigm | Use Case | Single-Thread | High Concurrency | Error Return | Lifecycle |
 |----------|----------|--------------|-----------------|--------------|-----------|
-| **Sync** | RPC, validation, hooks | **10.5 ns** | ~38 ns | ✅ | No Close needed |
-| **Async** | Event bus, logging, push | 37 ns | **26 ns** | ❌ | Close required |
-| **Flow** | ETL, batch loading | **48 ns** | — | ❌ | Close required |
+| **Sync** | RPC, validation, hooks | **10.4 ns** | ~36 ns | ✅ | No Close needed |
+| **Async** | Event bus, logging, push | 41 ns | **27 ns** | ❌ | Close required |
+| **Flow** | ETL, batch loading | **47 ns** | — | ❌ | Close required |
+
+> Latency data from Windows 11 (6C/12T). Full three-environment comparison in [Performance Comparison](#performance-comparison).
 
 ### API Quick Reference
 
@@ -138,9 +154,9 @@ beat.Off(id)
 bus, _ := beat.New()        // ≥4 cores → Async, <4 cores → Sync
 
 // === Layer 1: ForXxx() — three core APIs (recommended) ===
-bus, _ := beat.ForSync()    // Sync direct call, ~10.5ns/op
-bus, _ := beat.ForAsync()   // Per-P SPSC, ~26ns/op high concurrency
-bus, _ := beat.ForFlow()    // Pipeline, ~48ns/op, batch window
+bus, _ := beat.ForSync()    // Sync direct call, ~10.4ns/op
+bus, _ := beat.ForAsync()   // Per-P SPSC, ~27ns/op high concurrency
+bus, _ := beat.ForFlow()    // Pipeline, ~47ns/op, batch window
 
 // === Layer 2: Scenario() — string config ===
 bus, _ := beat.Scenario("sync")
@@ -202,31 +218,6 @@ defer bus.Close()
 // Graceful shutdown (waits for queue drain or timeout)
 bus.GracefulClose(5 * time.Second)
 ```
-
-## Benchmarks
-
-Environment: Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
-
-### Single-Thread
-
-```
-BenchmarkAllImpls_SingleProducer/Sync     10.42 ns/op    95.97 M/s    0 B/op    0 allocs/op
-BenchmarkAllImpls_SingleProducer/Async    37.41 ns/op    26.73 M/s    0 B/op    0 allocs/op
-BenchmarkAllImpls_SingleProducer/Flow     47.78 ns/op    20.94 M/s    0 B/op    0 allocs/op
-```
-
-### High Concurrency (RunParallel, 1 handler)
-
-```
-BenchmarkImplAsyncHighConcurrency/Async   26.48 ns/op    37.77 M/s    0 B/op    0 allocs/op
-BenchmarkImplSyncHighConcurrency/Sync     38.37 ns/op    26.06 M/s    0 B/op    0 allocs/op
-```
-
-**Key Takeaways**:
-- **Sync**: Fastest single-thread (10.5ns), CoW lock-free reads in high concurrency (~38ns)
-- **Async**: Fastest high concurrency (26ns), zero CAS, Per-P SPSC ring
-- **Zero Allocation**: All three paradigms 0 allocs/op on the hot path
-- **Scalable**: Async concurrency scales linearly with core count
 
 ## Architecture
 
@@ -464,17 +455,23 @@ go test -bench="BenchmarkImplFlow$" -benchtime=3s -cpuprofile=cpu.prof
 go tool pprof -top cpu.prof
 ```
 
+**Key Metrics**:
+
+| Metric | Windows 11 (6C/12T) | Linux (1C/2T, 2 vCPU) | Linux (2C/4T, 4 vCPU) |
+|--------|:---:|:---:|:---:|
+| **Sync single-thread** | 10.4 ns/op | 9.4 ns/op | 12.4 ns/op |
+| **Sync high concurrency** | ~36 ns/op | ~156 ns/op | ~83 ns/op |
+| **Async single-thread** | 41 ns/op | 30 ns/op | 77 ns/op |
+| **Async high concurrency** | 27 ns/op | 30 ns/op | 69 ns/op |
+| **Flow single-thread** | 47 ns/op | 53 ns/op | 58 ns/op |
+| **Allocations** | 0 allocs/op | 0 allocs/op | 0 allocs/op |
+
+- **Zero Allocation**: All three paradigms 0 allocs/op on the hot path
+- **Scalable**: Async concurrency scales linearly with core count
+
 ### Performance Requirements
 
-Changes must pass `-race` and show no benchmark regression (>10%):
-
-Environment: Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
-
-| Paradigm | Single-Thread | High Concurrency | Allocations |
-|----------|--------------|-----------------|-------------|
-| **Sync** | ≤12 ns/op | ~38 ns/op | 0 allocs/op |
-| **Async** | ~37 ns/op | ≤28 ns/op | 0 allocs/op |
-| **Flow** | ~48 ns/op | — | 0 allocs/op |
+Changes must pass `-race` and show no benchmark regression (>10%)
 
 ## License
 

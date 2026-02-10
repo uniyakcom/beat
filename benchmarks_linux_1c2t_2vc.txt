@@ -1,0 +1,157 @@
+# lscpu
+Architecture:        x86_64
+CPU op-mode(s):      32-bit, 64-bit
+Byte Order:          Little Endian
+CPU(s):              2
+On-line CPU(s) list: 0,1
+Thread(s) per core:  2
+Core(s) per socket:  1
+Socket(s):           1
+NUMA node(s):        1
+Vendor ID:           GenuineIntel
+BIOS Vendor ID:      Alibaba Cloud
+CPU family:          6
+Model:               85
+Model name:          Intel(R) Xeon(R) Platinum
+BIOS Model name:     pc-i440fx-2.1
+Stepping:            4
+CPU MHz:             2499.998
+BogoMIPS:            4999.99
+Hypervisor vendor:   KVM
+Virtualization type: full
+L1d cache:           32K
+L1i cache:           32K
+L2 cache:            1024K
+L3 cache:            33792K
+NUMA node0 CPU(s):   0,1
+Flags:               fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch cpuid_fault invpcid_single pti fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap clflushopt clwb avx512cd avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves arat
+
+# go test -bench="." -benchmem -count=1 -run="^$" ./...
+goos: linux
+goarch: amd64
+pkg: github.com/uniyakcom/beat
+cpu: Intel(R) Xeon(R) Platinum
+BenchmarkPanicRecoveryOverhead-2           	 3150810	       380.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPanicRecoveryWithStats-2          	 3123068	       377.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNormalHandlerVsPanicHandler/NormalHandler-2         	40223374	        29.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNormalHandlerVsPanicHandler/PanicHandlerAsync-2     	 3306626	       372.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPanicHandlerCount-2                                 	 3244059	       384.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStatsCollectionOverhead-2                           	 6524770	       184.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkImplSync-2                                          	128129295	         9.375 ns/op	       106.7 M/s	       0 B/op	       0 allocs/op
+BenchmarkImplSyncAsync-2                                     	 5666342	       212.9 ns/op	         4.697 M/s	      32 B/op	       1 allocs/op
+BenchmarkImplFlow-2                                          	21257840	        53.03 ns/op	        18.86 M/s	       0 B/op	       0 allocs/op
+BenchmarkImplSyncHighConcurrency-2                           	 7669479	       156.4 ns/op	         6.394 M/s	       0 B/op	       0 allocs/op
+BenchmarkImplFlowHighConcurrency-2                           	 5782497	       208.2 ns/op	         4.802 M/s	       3 B/op	       0 allocs/op
+BenchmarkImplSyncMemoryEfficiency-2                          	60098588	        20.01 ns/op	       0 B/op	       0 allocs/op
+BenchmarkImplComparison/Sync_16B-2                           	128102366	         9.378 ns/op	       0 B/op	       0 allocs/op
+BenchmarkImplComparison/Sync_256B-2                          	128057390	         9.370 ns/op	       0 B/op	       0 allocs/op
+BenchmarkImplComparison/Sync_1024B-2                         	128174182	         9.369 ns/op	       0 B/op	       0 allocs/op
+BenchmarkImplComparison/Sync_4096B-2                         	127970667	         9.382 ns/op	       0 B/op	       0 allocs/op
+BenchmarkImplPatternMatching/Sync-2                          	14554135	        80.61 ns/op	       0 B/op	       0 allocs/op
+BenchmarkImplPatternMatching/Flow-2                          	 9524277	       131.8 ns/op	       2 B/op	       0 allocs/op
+BenchmarkEventPool_AcquireRelease-2                          	51173368	        22.25 ns/op	       4 B/op	       1 allocs/op
+BenchmarkEventPool_Parallel-2                                	74446641	        16.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventPool_vs_NewEvent/Pool-2                        	100000000	        12.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventPool_vs_NewEvent/NewDirect-2                   	331220995	         3.547 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventPool_Arena-2                                   	  741458	      1620 ns/op	  47453312 allocs_saved	       0 B/op	       0 allocs/op
+BenchmarkAllImpls_SingleProducer/Sync-2                      	127783629	         9.388 ns/op	       106.5 M/s	       0 B/op	       0 allocs/op
+BenchmarkAllImpls_SingleProducer/Async-2                     	39983037	        29.64 ns/op	        33.73 M/s	       0 B/op	       0 allocs/op
+BenchmarkAllImpls_SingleProducer/Flow-2                      	22538457	        52.73 ns/op	        18.97 M/s	       0 B/op	       0 allocs/op
+BenchmarkAllImpls_HighConcurrency/Sync-2                     	 7773676	       154.8 ns/op	         6.458 M/s	       0 B/op	       0 allocs/op
+BenchmarkAllImpls_HighConcurrency/Async-2                    	 4277091	       287.9 ns/op	         3.473 M/s	       0 B/op	       0 allocs/op
+BenchmarkWithArena_SyncNoArena-2                             	11681018	       100.5 ns/op	     368 B/op	       2 allocs/op
+BenchmarkWithArena_SyncWithArena-2                           	26903859	        44.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkArena_ComparisonAllImpls/Sync/NoArena-2             	12052060	        99.64 ns/op	     368 B/op	       2 allocs/op
+BenchmarkArena_ComparisonAllImpls/Sync/WithArena-2           	26837311	        44.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkImplAsync-2                                         	40595023	        29.63 ns/op	        33.75 M/s	       0 B/op	       0 allocs/op
+BenchmarkImplAsyncHighConcurrency-2                          	40461945	        29.63 ns/op	        33.75 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioSync-2                                      	127161022	         9.411 ns/op	       106.3 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioPubSub-2                                    	40135760	        29.50 ns/op	        33.90 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioLogging-2                                   	41247363	        29.53 ns/op	        33.86 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioStream-2                                    	20799728	        52.84 ns/op	        18.93 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioBatch-2                                     	21219679	        52.37 ns/op	        19.10 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioUltra-2                                     	41039892	        29.68 ns/op	        33.70 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioSyncConcurrent-2                            	 7765930	       154.8 ns/op	         6.461 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioPubSubConcurrent-2                          	 4197436	       288.8 ns/op	         3.462 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioLoggingHighThroughput-2                     	13584973	        87.73 ns/op	        11.40 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioStreamPipeline-2                            	20175315	        59.50 ns/op	        16.81 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioBatchBulkInsert-2                           	   23610	     54084 ns/op	        18.49 M/s	       0 B/op	       0 allocs/op
+BenchmarkScenarioUltraLowLatency-2                           	41381680	        29.00 ns/op	        33.62 M/s	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/uniyakcom/beat	67.155s
+?   	github.com/uniyakcom/beat/core	[no test files]
+?   	github.com/uniyakcom/beat/internal/impl/async	[no test files]
+goos: linux
+goarch: amd64
+pkg: github.com/uniyakcom/beat/internal/impl/flow
+cpu: Intel(R) Xeon(R) Platinum
+BenchmarkFlowEmit-2              	21182552	        57.67 ns/op	       6 B/op	       0 allocs/op
+BenchmarkFlowBatchThroughput-2   	18781573	        61.78 ns/op	  16185940 events/sec	       6 B/op	       0 allocs/op
+BenchmarkFlowEmitBatch-2         	  431780	      5000 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/uniyakcom/beat/internal/impl/flow	5.109s
+?   	github.com/uniyakcom/beat/internal/impl/sync	[no test files]
+?   	github.com/uniyakcom/beat/internal/support/pool	[no test files]
+?   	github.com/uniyakcom/beat/internal/support/spsc	[no test files]
+?   	github.com/uniyakcom/beat/internal/support/wpool	[no test files]
+?   	github.com/uniyakcom/beat/optimize	[no test files]
+PASS
+ok  	github.com/uniyakcom/beat/test	0.003s
+goos: linux
+goarch: amd64
+pkg: github.com/uniyakcom/beat/util
+cpu: Intel(R) Xeon(R) Platinum
+BenchmarkPerCPUCounterAdd-2        	195052670	         6.098 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPerCPUCounterRead-2       	 9943624	       121.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPerCPUCounterParallel-2   	202920220	         5.880 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/uniyakcom/beat/util	4.941s
+
+# cd _benchmarks
+# go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
+goos: linux
+goarch: amd64
+pkg: github.com/uniyakcom/beat/_benchmarks
+cpu: Intel(R) Xeon(R) Platinum
+BenchmarkBeatSync_Emit_1Handler-2        	365569028	        10.03 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatSync_Emit_1Handler-2        	364885359	         9.820 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatSync_Emit_1Handler-2        	367088176	         9.798 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatSync_Emit_10Handlers-2      	209114902	        17.23 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatSync_Emit_10Handlers-2      	208746086	        17.26 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatSync_Emit_10Handlers-2      	208202112	        17.37 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatSync_Parallel_Emit-2        	313830588	        11.45 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatSync_Parallel_Emit-2        	320903425	        11.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatSync_Parallel_Emit-2        	322499958	        10.67 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Emit_1Handler-2       	120474074	        29.99 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Emit_1Handler-2       	120897936	        30.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Emit_1Handler-2       	120841549	        29.73 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Emit_10Handlers-2     	66825487	        54.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Emit_10Handlers-2     	65301074	        71.30 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Emit_10Handlers-2     	66411015	        55.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Parallel_Emit-2       	121735514	        29.79 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Parallel_Emit-2       	120527876	        30.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatAsync_Parallel_Emit-2       	100000000	        30.24 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatPkgAPI_Emit_1Handler-2      	291585415	        12.34 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatPkgAPI_Emit_1Handler-2      	290543317	        12.37 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBeatPkgAPI_Emit_1Handler-2      	291748006	        12.34 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventBus_Emit_1Handler-2        	26157345	       137.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventBus_Emit_1Handler-2        	26196674	       137.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventBus_Emit_1Handler-2        	26166118	       142.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventBus_Emit_10Handlers-2      	 2965321	      1212 ns/op	      80 B/op	       1 allocs/op
+BenchmarkEventBus_Emit_10Handlers-2      	 2568343	      1216 ns/op	      80 B/op	       1 allocs/op
+BenchmarkEventBus_Emit_10Handlers-2      	 2949013	      1459 ns/op	      80 B/op	       1 allocs/op
+BenchmarkEventBus_Parallel_Emit-2        	20867538	       172.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventBus_Parallel_Emit-2        	20893735	       172.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEventBus_Parallel_Emit-2        	20845951	       172.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGookitEvent_Emit_1Handler-2     	 9168472	       392.2 ns/op	      72 B/op	       2 allocs/op
+BenchmarkGookitEvent_Emit_1Handler-2     	 9136994	       391.5 ns/op	      72 B/op	       2 allocs/op
+BenchmarkGookitEvent_Emit_1Handler-2     	 9170440	       392.0 ns/op	      72 B/op	       2 allocs/op
+BenchmarkGookitEvent_Emit_10Handlers-2   	 7854252	       459.6 ns/op	      72 B/op	       2 allocs/op
+BenchmarkGookitEvent_Emit_10Handlers-2   	 7839828	       461.2 ns/op	      72 B/op	       2 allocs/op
+BenchmarkGookitEvent_Emit_10Handlers-2   	 7812601	       459.1 ns/op	      72 B/op	       2 allocs/op
+BenchmarkGookitEvent_Parallel_Emit-2     	 7957674	       453.3 ns/op	      72 B/op	       2 allocs/op
+BenchmarkGookitEvent_Parallel_Emit-2     	 7912620	       456.8 ns/op	      72 B/op	       2 allocs/op
+BenchmarkGookitEvent_Parallel_Emit-2     	 7889382	       456.1 ns/op	      72 B/op	       2 allocs/op
+PASS
+ok  	github.com/uniyakcom/beat/_benchmarks	184.224s
+
