@@ -5,10 +5,11 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-High-performance Go event bus — three paradigms, zero allocation, zero CAS.
+High-performance Go event bus — three paradigms, zero allocation, zero CAS, zero dependencies.
 
 ## Features
 
+- **Zero Dependencies**: Pure standard library, no third-party requires in `go.mod`
 - **Three Paradigms**: Sync (direct call) / Async (Per-P SPSC) / Flow (pipeline)
 - **Zero-Allocation Emit**: All three paradigms 0 B/op, 0 allocs/op
 - **Extreme Performance**: Async 26 ns/op high concurrency (38M ops/s), Sync 10.5 ns/op single-thread (95M ops/s)

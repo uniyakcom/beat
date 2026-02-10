@@ -5,10 +5,11 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-高性能 Go 事件总线 — 三预设架构，零分配，零 CAS。
+高性能 Go 事件总线 — 三预设架构，零分配，零 CAS，零外部依赖。
 
 ## 特性
 
+- **零外部依赖**: 纯标准库实现，`go.mod` 无任何第三方 require
 - **三预设架构**: Sync (同步直调) / Async (Per-P SPSC) / Flow (Pipeline 流处理)
 - **零分配 Emit**: 全部三预设 0 B/op, 0 allocs/op
 - **极致性能**: Async 高并发 26 ns/op (38M ops/s), Sync 单线程 10.5 ns/op (95M ops/s)

@@ -9,7 +9,7 @@ import (
 	"github.com/uniyakcom/beat/internal/support/pool"
 	"github.com/uniyakcom/beat/util"
 
-	"github.com/panjf2000/ants/v2"
+	"github.com/uniyakcom/beat/internal/support/wpool"
 )
 
 // Config 事件总线配置
@@ -91,10 +91,7 @@ func New(cfg *Config) (core.Bus, error) {
 		if poolSz <= 0 {
 			poolSz = optPoolSz()
 		}
-		pool, err := ants.NewPool(poolSz, ants.WithPreAlloc(true))
-		if err != nil {
-			return nil, err
-		}
+		pool := wpool.New(poolSz, 0)
 		e.gPool = pool
 		e.errChan = make(chan error, 1024)
 		e.errDone = make(chan struct{})

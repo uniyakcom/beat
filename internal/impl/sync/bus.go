@@ -11,7 +11,7 @@ import (
 	"github.com/uniyakcom/beat/core"
 	"github.com/uniyakcom/beat/util"
 
-	"github.com/panjf2000/ants/v2"
+	"github.com/uniyakcom/beat/internal/support/wpool"
 )
 
 // optPoolSz 根据OS和架构获取最优池大小
@@ -77,7 +77,7 @@ type Bus struct {
 	_pad1   [56]byte     // 独立 cache line，避免与 subs 的 false sharing
 
 	// === Reader 异步路径 ===
-	gPool *ants.Pool // 8B
+	gPool *wpool.Pool // 8B
 
 	// === Writer 冷路径（On/Off） ===
 	mu stdsync.Mutex // 8B
@@ -145,14 +145,10 @@ func NewAsync(poolSize int) (*Bus, error) {
 	if poolSize <= 0 {
 		poolSize = optPoolSz()
 	}
-	pool, err := ants.NewPool(poolSize, ants.WithPreAlloc(true))
-	if err != nil {
-		return nil, err
-	}
 	emitter := &Bus{
 		matcher:   core.NewTrieMatcher(),
 		async:     true,
-		gPool:     pool,
+		gPool:     wpool.New(poolSize, 0),
 		errChan:   make(chan error, 1024),
 		errDone:   make(chan struct{}),
 		emitted:   util.NewPerCPUCounter(),
