@@ -1,0 +1,16 @@
+.github
+
+# Profiling output
+*.prof
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build
+*.exe
+*.test
