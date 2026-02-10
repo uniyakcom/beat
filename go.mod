@@ -1,6 +1,6 @@
 module github.com/uniyakcom/beat
 
-go 1.25.7
+go 1.21
 
 require github.com/panjf2000/ants/v2 v2.11.5
 
