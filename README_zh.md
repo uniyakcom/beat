@@ -21,19 +21,29 @@
 
 ## 性能对比
 
-测试环境：Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)，Go 1.25.7
-
 ```bash
 cd _benchmarks
 go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
 ```
 
-| 场景 | beat (Sync) | beat (Async) | EventBus | gookit/event |
-|------|------------|-------------|----------|-------------|
-| **单 handler 发布** | **11 ns** 0 alloc | 37 ns 0 alloc | 190 ns 0 alloc | 581 ns 2 alloc |
-| **10 handler 发布** | **26 ns** 0 alloc | 34 ns 0 alloc | 1690 ns 1 alloc | 671 ns 2 alloc |
-| **高并发 (Parallel)** | 29 ns 0 alloc | **27 ns** 0 alloc | 255 ns 0 alloc | 194 ns 2 alloc |
+### Windows 10 — Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
 
+| 场景 | beat (Sync) | beat (Async) | EventBus | ×倍 | gookit/event | ×倍 |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **单 handler** | **11 ns** 0 alloc | 37 ns 0 alloc | 190 ns 0 alloc | **17×** | 581 ns 2 alloc | **53×** |
+| **10 handler** | **26 ns** 0 alloc | 34 ns 0 alloc | 1690 ns 1 alloc | **65×** | 671 ns 2 alloc | **26×** |
+| **高并发** | 29 ns 0 alloc | **27 ns** 0 alloc | 255 ns 0 alloc | **9×** | 194 ns 2 alloc | **7×** |
+
+### Alibaba Cloud Linux — Intel Xeon Platinum @ 2.50GHz (2C/2T, KVM)
+
+| 场景 | beat (Sync) | beat (Async) | EventBus | ×倍 | gookit/event | ×倍 |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **单 handler** | **12 ns** 0 alloc | 30 ns 0 alloc | 140 ns 0 alloc | **11×** | 392 ns 2 alloc | **32×** |
+| **10 handler** | **19 ns** 0 alloc | 55 ns 0 alloc | 1216 ns 1 alloc | **63×** | 459 ns 2 alloc | **24×** |
+| **高并发** | **8.3 ns** 0 alloc | 30 ns 0 alloc | 175 ns 0 alloc | **21×** | 454 ns 2 alloc | **55×** |
+
+> ×倍 = beat 最优值 / 竞品，越高越快。**全场景零分配**，竞品每次 Emit 产生 1–2 次堆分配。
+>
 > 对比库：[asaskevich/EventBus](https://github.com/asaskevich/EventBus) (2k⭐) / [gookit/event](https://github.com/gookit/event) (565⭐)
 >
 > 完整对比代码见 [`_benchmarks/`](_benchmarks/) 目录（独立 go.mod，不污染主项目）

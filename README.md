@@ -21,19 +21,29 @@ High-performance Go event bus — three paradigms, zero allocation, zero CAS, ze
 
 ## Performance Comparison
 
-Environment: Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T), Go 1.25.7
-
 ```bash
 cd _benchmarks
 go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
 ```
 
-| Scenario | beat (Sync) | beat (Async) | EventBus | gookit/event |
-|----------|------------|-------------|----------|-------------|
-| **1 handler emit** | **11 ns** 0 alloc | 37 ns 0 alloc | 190 ns 0 alloc | 581 ns 2 alloc |
-| **10 handler emit** | **26 ns** 0 alloc | 34 ns 0 alloc | 1690 ns 1 alloc | 671 ns 2 alloc |
-| **Parallel emit** | 29 ns 0 alloc | **27 ns** 0 alloc | 255 ns 0 alloc | 194 ns 2 alloc |
+### Windows 10 — Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
 
+| Scenario | beat (Sync) | beat (Async) | EventBus | × | gookit/event | × |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **1 handler** | **11 ns** 0 alloc | 37 ns 0 alloc | 190 ns 0 alloc | **17×** | 581 ns 2 alloc | **53×** |
+| **10 handlers** | **26 ns** 0 alloc | 34 ns 0 alloc | 1690 ns 1 alloc | **65×** | 671 ns 2 alloc | **26×** |
+| **Parallel** | 29 ns 0 alloc | **27 ns** 0 alloc | 255 ns 0 alloc | **9×** | 194 ns 2 alloc | **7×** |
+
+### Alibaba Cloud Linux — Intel Xeon Platinum @ 2.50GHz (2C/2T, KVM)
+
+| Scenario | beat (Sync) | beat (Async) | EventBus | × | gookit/event | × |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **1 handler** | **12 ns** 0 alloc | 30 ns 0 alloc | 140 ns 0 alloc | **11×** | 392 ns 2 alloc | **32×** |
+| **10 handlers** | **19 ns** 0 alloc | 55 ns 0 alloc | 1216 ns 1 alloc | **63×** | 459 ns 2 alloc | **24×** |
+| **Parallel** | **8.3 ns** 0 alloc | 30 ns 0 alloc | 175 ns 0 alloc | **21×** | 454 ns 2 alloc | **55×** |
+
+> × = beat best / competitor (higher = faster). **Zero allocation in all scenarios**, while competitors allocate 1–2 times per Emit.
+>
 > Competitors: [asaskevich/EventBus](https://github.com/asaskevich/EventBus) (2k⭐) / [gookit/event](https://github.com/gookit/event) (565⭐)
 >
 > Full comparison code in [`_benchmarks/`](_benchmarks/) directory (separate go.mod, won't pollute main project)
