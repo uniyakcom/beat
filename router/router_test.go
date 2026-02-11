@@ -2,6 +2,7 @@ package router_test
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,28 +127,39 @@ func TestRouterMiddleware(t *testing.T) {
 
 	r := router.NewRouter()
 
-	// 追踪中间件执行顺序
+	// 追踪中间件执行顺序（用 mutex 保护，避免竞态）
+	var mu sync.Mutex
 	var order []string
 
 	r.Use(func(h router.HandlerFunc) router.HandlerFunc {
 		return func(msg *message.Message) ([]*message.Message, error) {
+			mu.Lock()
 			order = append(order, "global-before")
+			mu.Unlock()
 			result, err := h(msg)
+			mu.Lock()
 			order = append(order, "global-after")
+			mu.Unlock()
 			return result, err
 		}
 	})
 
 	handler := r.On("mw.test", "mw.topic", sub, func(msg *message.Message) error {
+		mu.Lock()
 		order = append(order, "handler")
+		mu.Unlock()
 		return nil
 	})
 
 	handler.AddMiddleware(func(h router.HandlerFunc) router.HandlerFunc {
 		return func(msg *message.Message) ([]*message.Message, error) {
+			mu.Lock()
 			order = append(order, "handler-before")
+			mu.Unlock()
 			result, err := h(msg)
+			mu.Lock()
 			order = append(order, "handler-after")
+			mu.Unlock()
 			return result, err
 		}
 	})
@@ -166,13 +178,18 @@ func TestRouterMiddleware(t *testing.T) {
 	<-r.Closed()
 
 	// 洋葱模型：global-before → handler-before → handler → handler-after → global-after
+	mu.Lock()
+	snapshot := make([]string, len(order))
+	copy(snapshot, order)
+	mu.Unlock()
+
 	expected := []string{"global-before", "handler-before", "handler", "handler-after", "global-after"}
-	if len(order) != len(expected) {
-		t.Fatalf("order length %d, want %d: %v", len(order), len(expected), order)
+	if len(snapshot) != len(expected) {
+		t.Fatalf("order length %d, want %d: %v", len(snapshot), len(expected), snapshot)
 	}
 	for i, v := range expected {
-		if order[i] != v {
-			t.Errorf("order[%d] = %q, want %q", i, order[i], v)
+		if snapshot[i] != v {
+			t.Errorf("order[%d] = %q, want %q", i, snapshot[i], v)
 		}
 	}
 }
