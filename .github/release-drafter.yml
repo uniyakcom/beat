@@ -1,0 +1,108 @@
+name-template: '$REPOSITORY v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+categories:
+  - title: 🧨 Breaking Changes
+    labels:
+      - breaking changes
+  - title: 🚀 Features
+    labels:
+      - new feature
+      - proposal
+  - title: 🛩 Enhancements
+    labels:
+      - enhancement
+      - optimization
+  - title: 🐛 Bug Fixes
+    labels:
+      - bug
+  - title: 📚 Documentation
+    labels:
+      - docs
+  - title: 🗃 Misc
+    labels:
+      - chores
+      - dependencies
+change-template: '- $TITLE (#$NUMBER)'
+change-title-escapes: '\<*_&'
+version-resolver:
+  major:
+    labels:
+      - major
+      - breaking changes
+  minor:
+    labels:
+      - minor
+      - new feature
+      - proposal
+  patch:
+    labels:
+      - patch
+      - bug
+      - dependencies
+  default: patch
+autolabeler:
+  - label: breaking changes
+    title:
+      - '/!:/'
+      - /breaking/i
+  - label: new feature
+    title:
+      - /feat/i
+      - /feature/i
+      - /implement/i
+      - /add/i
+  - label: bug
+    title:
+      - /fix/i
+      - /bug/i
+      - /resolve/i
+  - label: enhancement
+    title:
+      - /refactor/i
+      - /improve/i
+      - /update/i
+      - /remove/i
+      - /delete/i
+  - label: optimization
+    title:
+      - /opt:/i
+      - /perf/i
+      - /optimize/i
+  - label: docs
+    files:
+      - '*.md'
+      - 'docs/**'
+    title:
+      - /doc/i
+  - label: dependencies
+    title:
+      - /dep/i
+      - /upgrade/i
+      - /bump/i
+  - label: chores
+    title:
+      - /chore/i
+      - /misc/i
+      - /cleanup/i
+      - /ci/i
+  - label: major
+    title:
+      - /major:/i
+  - label: minor
+    title:
+      - /minor:/i
+  - label: patch
+    title:
+      - /patch:/i
+template: |
+  ## Changelogs
+
+  $CHANGES
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+  ---
+
+  ```bash
+  go get github.com/$OWNER/$REPOSITORY@v$RESOLVED_VERSION
+  ```

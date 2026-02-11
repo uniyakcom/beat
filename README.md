@@ -555,6 +555,7 @@ go build ./...              # 编译
 go vet ./...                # 静态分析
 go test ./... -count=1      # 功能测试
 go test -race ./... -short  # 竞态检测
+gofmt -s -w ./               # 格式化整个项目
 ```
 
 ### 性能基准

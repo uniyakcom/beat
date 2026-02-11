@@ -5,7 +5,8 @@
 | 文件 | 作用 |
 |---|---|
 | `.githooks/pre-commit` | 提交时自动格式化 Go 代码 |
-| `.github/workflows/release.yml` | push 到 main 或打 tag 时自动发布 |
+| `.github/release-drafter.yml` | Release Drafter 配置（分类、标签、版本规则、模板） |
+| `.github/workflows/release.yml` | push/PR 时自动更新 Release 草稿 |
 | `.github/workflows/format.yml` | PR 格式化 + 测试门禁 |
 
 ## 初始化
@@ -20,49 +21,43 @@ git config core.hooksPath .githooks
 
 ```bash
 git add .
-git commit -m "feat: add batch mode"   # 自动格式化
-git push                                 # 自动发布
+git commit -m "feat: add batch mode"   # pre-commit 自动格式化
+git push                                 # 自动更新 Release 草稿
 ```
 
-commit message 遵循 [Conventional Commits](https://www.conventionalcommits.org/)：
+## 自动标签
 
-| 前缀 | 含义 | 版本变化 |
+PR 标题会被自动打标签，标签决定版本递增：
+
+| PR 标题关键词 | 自动标签 | 版本变化 |
 |---|---|---|
-| `fix:` | 修复 | patch +1 |
-| `feat:` | 新功能 | minor +1 |
-| `feat!:` 或含 `BREAKING CHANGE` | 破坏性变更 | major +1 |
-| 其他（`docs:`, `chore:` 等） | 杂项 | patch +1 |
+| `feat`, `feature`, `add`, `implement` | `new feature` | minor +1 |
+| `fix`, `bug`, `resolve` | `bug` | patch +1 |
+| `!:`, `breaking` | `breaking changes` | major +1 |
+| `refactor`, `improve`, `update` | `enhancement` | — |
+| `opt:`, `perf`, `optimize` | `optimization` | — |
+| `doc` | `docs` | — |
+| `dep`, `upgrade`, `bump` | `dependencies` | patch +1 |
+| `chore`, `misc`, `cleanup`, `ci` | `chores` | — |
 
 ## 发布方式
 
-### 1. 全自动（推荐）
+### 1. 发布 Release 草稿（推荐）
 
-push 到 main，版本号从 commit message 自动推断：
+每次 push 到 main，Release Drafter 会自动维护一个草稿：
 
-```bash
-git push   # → v1.1.0（如果包含 feat: 提交）
-```
+1. 打开 GitHub → **Releases** 页面
+2. 查看自动生成的草稿，版本号已根据标签自动计算
+3. 可编辑版本号或内容
+4. 点击 **Publish release** → 完成！
 
 ### 2. 手动指定版本号
 
-```bash
-git tag v2.0.0
-git push origin v2.0.0
-```
+编辑草稿时直接修改 Tag 和标题中的版本号。
 
-### 3. GitHub UI 手动触发
+### 3. 强制版本控制
 
-1. 打开 **Actions** → **Release**
-2. 点击 **Run workflow**
-3. 可选填写版本号，或选择递增类型（patch/minor/major）
-
-### 4. 跳过发布
-
-commit message 中加 `[skip release]`：
-
-```bash
-git commit -m "docs: update readme [skip release]"
-```
+给 PR 添加 `major:` / `minor:` / `patch:` 标签来覆盖自动推断。
 
 ## 格式化
 
@@ -73,7 +68,8 @@ git commit -m "docs: update readme [skip release]"
 
 每次发布自动生成：
 
-- Git Tag
+- Git Tag（自动创建）
 - GitHub Release 页面
-- 分类 CHANGELOG（Features / Fixes / Other）
-- 安装命令
+- 分类 Changelog（Breaking Changes / Features / Enhancements / Bug Fixes / Documentation / Misc）
+- Full Changelog 对比链接
+- `go get` 安装命令（仓库地址自动获取）
