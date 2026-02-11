@@ -31,7 +31,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, topic string) (<-chan *messa
 	output := make(chan *message.Message, 256)
 
 	s.bus.On(topic, func(e *core.Event) error {
-		msg := message.NewMessage(e.ID, e.Data)
+		msg := message.New(e.ID, e.Data)
 		msg.Metadata.Set("_topic", e.Type)
 		msg.Metadata.Set("_source", e.Source)
 		// 复制事件元数据

@@ -248,12 +248,12 @@ func (e *Bus) EmitMatchBatch(events []*core.Event) error {
 
 // Stats 返回运行时统计
 // emitted 近似等于 processed（差值 = ring 中未消费事件数）
-func (e *Bus) Stats() core.BusStats {
+func (e *Bus) Stats() core.Stats {
 	processed := e.processed.Read()
-	return core.BusStats{
-		EventsEmitted:   processed,
-		EventsProcessed: processed,
-		Panics:          e.panics.Read(),
+	return core.Stats{
+		Emitted:   processed,
+		Processed: processed,
+		Panics:    e.panics.Read(),
 	}
 }
 
@@ -265,8 +265,8 @@ func (e *Bus) Close() {
 	e.sched.Stop()
 }
 
-// GracefulClose 优雅关闭
-func (e *Bus) GracefulClose(timeout time.Duration) error {
+// Drain 优雅关闭
+func (e *Bus) Drain(timeout time.Duration) error {
 	if timeout <= 0 {
 		e.Close()
 		return nil

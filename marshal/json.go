@@ -13,11 +13,11 @@ type jsonEnvelope struct {
 	Payload  json.RawMessage   `json:"payload"`
 }
 
-// JSONMarshaler JSON 序列化器（零外部依赖）
-type JSONMarshaler struct{}
+// JSON JSON 编解码器（零外部依赖）
+type JSON struct{}
 
 // Marshal 将消息序列化为 JSON。
-func (j JSONMarshaler) Marshal(_ string, msg *message.Message) ([]byte, error) {
+func (j JSON) Marshal(_ string, msg *message.Message) ([]byte, error) {
 	env := jsonEnvelope{
 		UUID:     msg.UUID,
 		Metadata: msg.Metadata,
@@ -27,13 +27,13 @@ func (j JSONMarshaler) Marshal(_ string, msg *message.Message) ([]byte, error) {
 }
 
 // Unmarshal 将 JSON 反序列化为消息。
-func (j JSONMarshaler) Unmarshal(_ string, data []byte) (*message.Message, error) {
+func (j JSON) Unmarshal(_ string, data []byte) (*message.Message, error) {
 	var env jsonEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, err
 	}
 
-	msg := message.NewMessage(env.UUID, env.Payload)
+	msg := message.New(env.UUID, env.Payload)
 	for k, v := range env.Metadata {
 		msg.Metadata.Set(k, v)
 	}

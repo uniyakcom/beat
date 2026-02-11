@@ -18,6 +18,8 @@
 package local
 
 import (
+	"context"
+
 	"github.com/uniyakcom/beat/core"
 	"github.com/uniyakcom/beat/message"
 )
@@ -39,7 +41,7 @@ func NewPublisher(bus core.Bus) *Publisher {
 //   - msg.Payload → Event.Data
 //   - msg.UUID → Event.ID
 //   - msg.Metadata → Event.Metadata
-func (p *Publisher) Publish(topic string, messages ...*message.Message) error {
+func (p *Publisher) Publish(_ context.Context, topic string, messages ...*message.Message) error {
 	for _, msg := range messages {
 		evt := &core.Event{
 			Type:     topic,

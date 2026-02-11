@@ -2,7 +2,7 @@
 //
 // 记录每条消息的处理耗时、产出数量和错误信息。使用 log/slog 零外部依赖。
 //
-//	r.AddMiddleware(logging.New(slog.Default()))
+//	r.Use(logging.New(slog.Default()))
 package logging
 
 import (

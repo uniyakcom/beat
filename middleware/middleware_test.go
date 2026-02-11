@@ -29,7 +29,7 @@ func TestRetryMiddleware(t *testing.T) {
 		return nil, nil
 	})
 
-	msg := message.NewMessage("", []byte("test"))
+	msg := message.New("", []byte("test"))
 	_, err := handler(msg)
 
 	if err != nil {
@@ -52,7 +52,7 @@ func TestRetryExhausted(t *testing.T) {
 		return nil, errors.New("persistent error")
 	})
 
-	msg := message.NewMessage("", []byte("test"))
+	msg := message.New("", []byte("test"))
 	_, err := handler(msg)
 
 	if err == nil {
@@ -80,7 +80,7 @@ func TestRetryShouldRetry(t *testing.T) {
 		return nil, errNoRetry
 	})
 
-	msg := message.NewMessage("", []byte("test"))
+	msg := message.New("", []byte("test"))
 	_, err := handler(msg)
 
 	if !errors.Is(err, errNoRetry) {
@@ -103,7 +103,7 @@ func TestTimeoutMiddleware(t *testing.T) {
 		}
 	})
 
-	msg := message.NewMessage("", []byte("test"))
+	msg := message.New("", []byte("test"))
 	_, err := handler(msg)
 
 	if err == nil {
@@ -118,7 +118,7 @@ func TestRecovererMiddleware(t *testing.T) {
 		panic("test panic")
 	})
 
-	msg := message.NewMessage("", []byte("test"))
+	msg := message.New("", []byte("test"))
 	_, err := handler(msg)
 
 	if err == nil {
@@ -139,10 +139,10 @@ func TestCorrelationMiddleware(t *testing.T) {
 
 	t.Run("generates ID if missing", func(t *testing.T) {
 		handler := mw(func(msg *message.Message) ([]*message.Message, error) {
-			return []*message.Message{message.NewMessage("", nil)}, nil
+			return []*message.Message{message.New("", nil)}, nil
 		})
 
-		msg := message.NewMessage("", nil)
+		msg := message.New("", nil)
 		produced, err := handler(msg)
 		if err != nil {
 			t.Fatal(err)
@@ -166,7 +166,7 @@ func TestCorrelationMiddleware(t *testing.T) {
 			return nil, nil
 		})
 
-		msg := message.NewMessage("", nil)
+		msg := message.New("", nil)
 		msg.Metadata.Set(correlation.HeaderCorrelationID, "existing-id")
 		_, _ = handler(msg)
 
@@ -205,7 +205,7 @@ func TestMiddlewareChaining(t *testing.T) {
 	// 洋葱模型: mw1 wraps mw2 wraps handler
 	wrapped := mw1(mw2(handler))
 
-	msg := message.NewMessage("", nil)
+	msg := message.New("", nil)
 	_, _ = wrapped(msg)
 
 	expected := []string{"mw1-before", "mw2-before", "handler", "mw2-after", "mw1-after"}

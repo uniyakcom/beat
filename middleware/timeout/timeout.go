@@ -2,7 +2,7 @@
 //
 // 为每条消息设置处理截止时间，超时后 context 取消。
 //
-//	r.AddMiddleware(timeout.New(5 * time.Second))
+//	r.Use(timeout.New(5 * time.Second))
 package timeout
 
 import (

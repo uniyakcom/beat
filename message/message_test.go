@@ -7,8 +7,8 @@ import (
 	"github.com/uniyakcom/beat/message"
 )
 
-func TestNewMessage(t *testing.T) {
-	msg := message.NewMessage("", []byte("hello"))
+func TestNew(t *testing.T) {
+	msg := message.New("", []byte("hello"))
 
 	if msg.UUID == "" {
 		t.Error("UUID should be auto-generated")
@@ -22,7 +22,7 @@ func TestNewMessage(t *testing.T) {
 }
 
 func TestNewMessageWithUUID(t *testing.T) {
-	msg := message.NewMessage("custom-uuid", []byte("data"))
+	msg := message.New("custom-uuid", []byte("data"))
 	if msg.UUID != "custom-uuid" {
 		t.Errorf("UUID = %q, want %q", msg.UUID, "custom-uuid")
 	}
@@ -30,7 +30,7 @@ func TestNewMessageWithUUID(t *testing.T) {
 
 func TestAckNack(t *testing.T) {
 	t.Run("Ack", func(t *testing.T) {
-		msg := message.NewMessage("", nil)
+		msg := message.New("", nil)
 		msg.Ack()
 		select {
 		case <-msg.Acked():
@@ -41,7 +41,7 @@ func TestAckNack(t *testing.T) {
 	})
 
 	t.Run("Nack", func(t *testing.T) {
-		msg := message.NewMessage("", nil)
+		msg := message.New("", nil)
 		msg.Nack()
 		select {
 		case <-msg.Nacked():
@@ -52,20 +52,20 @@ func TestAckNack(t *testing.T) {
 	})
 
 	t.Run("DoubleAck", func(t *testing.T) {
-		msg := message.NewMessage("", nil)
+		msg := message.New("", nil)
 		msg.Ack()
 		msg.Ack() // should not panic
 	})
 
 	t.Run("DoubleNack", func(t *testing.T) {
-		msg := message.NewMessage("", nil)
+		msg := message.New("", nil)
 		msg.Nack()
 		msg.Nack() // should not panic
 	})
 }
 
 func TestMessageContext(t *testing.T) {
-	msg := message.NewMessage("", nil)
+	msg := message.New("", nil)
 
 	if msg.Context() == nil {
 		t.Error("default context should not be nil")
@@ -80,7 +80,7 @@ func TestMessageContext(t *testing.T) {
 }
 
 func TestMessageCopy(t *testing.T) {
-	orig := message.NewMessage("orig-uuid", []byte("payload"))
+	orig := message.New("orig-uuid", []byte("payload"))
 	orig.Metadata.Set("key", "value")
 
 	cp := orig.Copy()
@@ -166,11 +166,11 @@ func TestNewUUID(t *testing.T) {
 	}
 }
 
-func BenchmarkNewMessage(b *testing.B) {
+func BenchmarkNew(b *testing.B) {
 	payload := []byte("benchmark-payload")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = message.NewMessage("", payload)
+		_ = message.New("", payload)
 	}
 }
 

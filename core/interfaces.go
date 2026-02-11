@@ -22,12 +22,12 @@ type Handler func(*Event) error
 // PanicHandler panic 回调（可选，用户注册后接收 panic 通知）
 type PanicHandler func(recovered interface{}, evt *Event)
 
-// BusStats 事件总线运行时统计
-type BusStats struct {
-	EventsEmitted   int64 // 已发布事件总数
-	EventsProcessed int64 // 已处理事件总数（handler 执行完成）
-	Panics          int64 // handler panic 次数
-	QueueDepth      int64 // 当前队列积压深度（仅 Ring Buffer 实现有值）
+// Stats 事件总线运行时统计
+type Stats struct {
+	Emitted   int64 // 已发布事件总数
+	Processed int64 // 已处理事件总数（handler 执行完成）
+	Panics    int64 // handler panic 次数
+	Depth     int64 // 当前队列积压深度（仅 Ring Buffer 实现有值）
 }
 
 // Bus 事件总线接口
@@ -51,12 +51,12 @@ type Bus interface {
 	EmitMatchBatch(events []*Event) error
 
 	// Stats 返回运行时统计
-	Stats() BusStats
+	Stats() Stats
 
 	// Close 关闭（立即关闭，不等待队列排空）
 	Close()
 
-	// GracefulClose 优雅关闭（等待队列排空或超时）
+	// Drain 优雅关闭（等待队列排空或超时）
 	// timeout=0 时等效于 Close()
-	GracefulClose(timeout time.Duration) error
+	Drain(timeout time.Duration) error
 }

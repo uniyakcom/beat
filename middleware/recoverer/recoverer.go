@@ -2,7 +2,7 @@
 //
 // 捕获 handler 内的 panic 并转化为 error 返回，防止单条消息的 panic 影响整个 Router。
 //
-//	r.AddMiddleware(recoverer.New())
+//	r.Use(recoverer.New())
 package recoverer
 
 import (

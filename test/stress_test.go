@@ -404,8 +404,8 @@ func TestStressBatchEmit(t *testing.T) {
 	}
 
 	// Flow bus 是异步的，EmitBatch 只是推入环形缓冲区
-	// 需要 GracefulClose 等待所有事件消费完毕后再断言
-	bus.GracefulClose(10 * time.Second)
+	// 需要 Drain 等待所有事件消费完毕后再断言
+	bus.Drain(10 * time.Second)
 
 	duration := time.Since(start)
 

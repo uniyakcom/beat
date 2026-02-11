@@ -1,0 +1,15 @@
+#!/bin/sh
+# 提交前自动格式化 Go 代码
+# 设置: git config core.hooksPath .githooks
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+echo "🔧 格式化 Go 文件..."
+echo "$STAGED" | xargs gofmt -w
+echo "$STAGED" | xargs git add
+
+exit 0

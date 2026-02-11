@@ -101,8 +101,8 @@ func TestPackageAPIStats(t *testing.T) {
 	Off(id)
 
 	stats := Stats()
-	if stats.EventsEmitted == 0 {
-		t.Error("expected EventsEmitted > 0")
+	if stats.Emitted == 0 {
+		t.Error("expected Emitted > 0")
 	}
 }
 

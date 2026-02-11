@@ -31,10 +31,10 @@ func TestPublishSubscribe(t *testing.T) {
 
 	// 发布
 	payload := []byte(`{"key":"value"}`)
-	msg := message.NewMessage("", payload)
+	msg := message.New("", payload)
 	msg.Metadata.Set("foo", "bar")
 
-	if err := pub.Publish("test.topic", msg); err != nil {
+	if err := pub.Publish(context.Background(), "test.topic", msg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +75,7 @@ func TestMultipleMessages(t *testing.T) {
 
 	const count = 100
 	for i := 0; i < count; i++ {
-		if err := pub.Publish("batch.topic", message.NewMessage("", []byte{byte(i)})); err != nil {
+		if err := pub.Publish(context.Background(), "batch.topic", message.New("", []byte{byte(i)})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -114,7 +114,7 @@ func TestSubscriberClose(t *testing.T) {
 	sub.Close()
 
 	// Publish after close — message should not be received
-	_ = pub.Publish("close.topic", message.NewMessage("", []byte("after-close")))
+	_ = pub.Publish(context.Background(), "close.topic", message.New("", []byte("after-close")))
 
 	select {
 	case <-msgCh:
@@ -146,7 +146,7 @@ func TestContextCancel(t *testing.T) {
 	cancel()
 
 	// Publish after context cancel
-	_ = pub.Publish("ctx.topic", message.NewMessage("", []byte("after-cancel")))
+	_ = pub.Publish(context.Background(), "ctx.topic", message.New("", []byte("after-cancel")))
 
 	select {
 	case <-msgCh:
@@ -195,7 +195,7 @@ func BenchmarkLocalPublishSubscribe(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = pub.Publish("bench.topic", message.NewMessage("", payload))
+		_ = pub.Publish(context.Background(), "bench.topic", message.New("", payload))
 	}
 	b.StopTimer()
 }

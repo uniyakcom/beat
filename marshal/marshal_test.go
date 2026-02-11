@@ -8,9 +8,9 @@ import (
 )
 
 func TestJSONMarshalRoundTrip(t *testing.T) {
-	m := marshal.JSONMarshaler{}
+	m := marshal.JSON{}
 
-	orig := message.NewMessage("test-uuid-123", []byte(`{"order_id":42}`))
+	orig := message.New("test-uuid-123", []byte(`{"order_id":42}`))
 	orig.Metadata.Set("source", "test")
 	orig.Metadata.Set("priority", "high")
 
@@ -39,9 +39,9 @@ func TestJSONMarshalRoundTrip(t *testing.T) {
 }
 
 func TestJSONMarshalEmptyPayload(t *testing.T) {
-	m := marshal.JSONMarshaler{}
+	m := marshal.JSON{}
 
-	orig := message.NewMessage("", nil)
+	orig := message.New("", nil)
 	data, err := m.Marshal("topic", orig)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func TestJSONMarshalEmptyPayload(t *testing.T) {
 }
 
 func TestJSONUnmarshalInvalid(t *testing.T) {
-	m := marshal.JSONMarshaler{}
+	m := marshal.JSON{}
 	_, err := m.Unmarshal("topic", []byte("not-json"))
 	if err == nil {
 		t.Error("should return error for invalid JSON")
@@ -66,8 +66,8 @@ func TestJSONUnmarshalInvalid(t *testing.T) {
 }
 
 func BenchmarkJSONMarshal(b *testing.B) {
-	m := marshal.JSONMarshaler{}
-	msg := message.NewMessage("bench-uuid", []byte(`{"data":"benchmark"}`))
+	m := marshal.JSON{}
+	msg := message.New("bench-uuid", []byte(`{"data":"benchmark"}`))
 	msg.Metadata.Set("key", "value")
 
 	b.ResetTimer()
@@ -77,8 +77,8 @@ func BenchmarkJSONMarshal(b *testing.B) {
 }
 
 func BenchmarkJSONUnmarshal(b *testing.B) {
-	m := marshal.JSONMarshaler{}
-	msg := message.NewMessage("bench-uuid", []byte(`{"data":"benchmark"}`))
+	m := marshal.JSON{}
+	msg := message.New("bench-uuid", []byte(`{"data":"benchmark"}`))
 	msg.Metadata.Set("key", "value")
 	data, _ := m.Marshal("topic", msg)
 

@@ -366,19 +366,19 @@ func (e *Bus) Preload(eventTypes []string) {
 // Stats 返回运行时统计
 // 同步模式: syncCnt 即 emitted ≡ processed
 // 异步模式: emitted 独立计数，processed 通过 PerCPU 计数
-func (e *Bus) Stats() core.BusStats {
+func (e *Bus) Stats() core.Stats {
 	if e.async {
-		return core.BusStats{
-			EventsEmitted:   e.emitted.Read(),
-			EventsProcessed: e.processed.Read(),
-			Panics:          e.panics.Read(),
+		return core.Stats{
+			Emitted:   e.emitted.Read(),
+			Processed: e.processed.Read(),
+			Panics:    e.panics.Read(),
 		}
 	}
 	cnt := e.syncCnt.Load()
-	return core.BusStats{
-		EventsEmitted:   cnt,
-		EventsProcessed: cnt,
-		Panics:          e.panics.Read(),
+	return core.Stats{
+		Emitted:   cnt,
+		Processed: cnt,
+		Panics:    e.panics.Read(),
 	}
 }
 
@@ -402,8 +402,8 @@ func (e *Bus) Close() {
 	// channel会GC自动回收
 }
 
-// GracefulClose 优雅关闭（等待异步任务完成或超时）
-func (e *Bus) GracefulClose(timeout time.Duration) error {
+// Drain 优雅关闭（等待异步任务完成或超时）
+func (e *Bus) Drain(timeout time.Duration) error {
 	if timeout <= 0 {
 		e.Close()
 		return nil

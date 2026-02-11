@@ -12,8 +12,10 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/uniyakcom/beat/message"
 )
@@ -22,7 +24,7 @@ import (
 type Router struct {
 	handlers    []*Handler
 	middlewares []Middleware
-	plugins     []RouterPlugin
+	plugins     []Plugin
 	logger      *slog.Logger
 
 	running     chan struct{}
@@ -54,19 +56,19 @@ func NewRouter(cfg ...Config) *Router {
 	}
 }
 
-// AddMiddleware 添加全局中间件（对所有 Handler 生效）。
-func (r *Router) AddMiddleware(m ...Middleware) {
+// Use 添加全局中间件（对所有 Handler 生效）。
+func (r *Router) Use(m ...Middleware) {
 	r.middlewares = append(r.middlewares, m...)
 }
 
-// AddPlugin 添加路由器插件（生命周期钩子）。
-func (r *Router) AddPlugin(p ...RouterPlugin) {
+// Plugin 添加路由器插件（生命周期钩子）。
+func (r *Router) Plugin(p ...Plugin) {
 	r.plugins = append(r.plugins, p...)
 }
 
-// AddHandler 添加完整处理管道：subscribeTopic → handler → publishTopic。
+// Handle 添加完整处理管道：subscribeTopic → handler → publishTopic。
 //
-//	r.AddHandler(
+//	r.Handle(
 //	    "order.process",
 //	    "order.created", sub,
 //	    "order.processed", pub,
@@ -75,7 +77,7 @@ func (r *Router) AddPlugin(p ...RouterPlugin) {
 //	        return []*message.Message{result}, nil
 //	    },
 //	)
-func (r *Router) AddHandler(
+func (r *Router) Handle(
 	name string,
 	subscribeTopic string,
 	subscriber message.Subscriber,
@@ -106,13 +108,60 @@ func (r *Router) On(
 	name string,
 	topic string,
 	subscriber message.Subscriber,
-	handlerFunc NoPublishHandlerFunc,
+	handlerFunc ConsumerFunc,
 ) *Handler {
-	return r.AddHandler(
+	return r.Handle(
 		name, topic, subscriber, "", nil,
 		func(msg *message.Message) ([]*message.Message, error) {
 			return nil, handlerFunc(msg)
 		},
+	)
+}
+
+// HandleBatch 添加批量处理管道：subscribeTopic → batchHandler → publishTopic。
+//
+// batchSize 条消息或 batchTimeout 超时后触发一次批量处理。
+// 中间件对批量处理器不生效，批量函数本身即为处理单元。
+func (r *Router) HandleBatch(
+	name string,
+	subscribeTopic string,
+	subscriber message.Subscriber,
+	publishTopic string,
+	publisher message.Publisher,
+	handlerFunc BatchFunc,
+	batchSize int,
+	batchTimeout time.Duration,
+) *Handler {
+	h := &Handler{
+		name:           name,
+		subscribeTopic: subscribeTopic,
+		subscriber:     subscriber,
+		publishTopic:   publishTopic,
+		publisher:      publisher,
+		batchFunc:      handlerFunc,
+		batchSize:      batchSize,
+		batchTimeout:   batchTimeout,
+		logger:         r.logger.With("handler", name),
+	}
+	r.handlers = append(r.handlers, h)
+	return h
+}
+
+// OnBatch 批量消费（不发布产出），beat 风格便捷 API。
+func (r *Router) OnBatch(
+	name string,
+	topic string,
+	subscriber message.Subscriber,
+	handlerFunc func(msgs []*message.Message) error,
+	batchSize int,
+	batchTimeout time.Duration,
+) *Handler {
+	return r.HandleBatch(
+		name, topic, subscriber, "", nil,
+		func(msgs []*message.Message) ([]*message.Message, error) {
+			return nil, handlerFunc(msgs)
+		},
+		batchSize, batchTimeout,
 	)
 }
 
@@ -137,12 +186,16 @@ func (r *Router) Run(ctx context.Context) error {
 
 	runs := make([]handlerRun, 0, len(r.handlers))
 	for _, h := range r.handlers {
-		fn := h.handlerFunc
-		for i := len(h.middlewares) - 1; i >= 0; i-- {
-			fn = h.middlewares[i](fn)
-		}
-		for i := len(r.middlewares) - 1; i >= 0; i-- {
-			fn = r.middlewares[i](fn)
+		// 仅对单条处理器构建中间件链（批量处理器跳过）
+		var fn HandlerFunc
+		if h.handlerFunc != nil {
+			fn = h.handlerFunc
+			for i := len(h.middlewares) - 1; i >= 0; i-- {
+				fn = h.middlewares[i](fn)
+			}
+			for i := len(r.middlewares) - 1; i >= 0; i-- {
+				fn = r.middlewares[i](fn)
+			}
 		}
 
 		msgCh, err := h.subscriber.Subscribe(ctx, h.subscribeTopic)
@@ -169,7 +222,15 @@ func (r *Router) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func(h *Handler, fn HandlerFunc, msgCh <-chan *message.Message) {
 			defer wg.Done()
-			if err := r.runHandlerLoop(ctx, h, fn, msgCh); err != nil {
+			var err error
+			if h.batchFunc != nil {
+				err = r.runBatchLoop(ctx, h, h.batchFunc, msgCh)
+			} else if h.concurrency > 1 {
+				err = r.runConcurrentLoop(ctx, h, fn, msgCh)
+			} else {
+				err = r.runSequentialLoop(ctx, h, fn, msgCh)
+			}
+			if err != nil {
 				errCh <- err
 			}
 		}(run.handler, run.fn, run.msgCh)
@@ -221,10 +282,13 @@ func (r *Router) Handlers() []*Handler {
 	return r.handlers
 }
 
-// runHandlerLoop 运行单个 Handler 的消息循环（订阅已在 Run 中完成）。
-func (r *Router) runHandlerLoop(ctx context.Context, h *Handler, fn HandlerFunc, msgCh <-chan *message.Message) error {
-	h.logger.Info("handler started", "topic", h.subscribeTopic)
+// ---------------------------------------------------------------------------
+// 消息循环
+// ---------------------------------------------------------------------------
 
+// runSequentialLoop 顺序处理消息（单 goroutine，保证有序）。
+func (r *Router) runSequentialLoop(ctx context.Context, h *Handler, fn HandlerFunc, msgCh <-chan *message.Message) error {
+	h.logger.Info("sequential loop started", "topic", h.subscribeTopic)
 	for {
 		select {
 		case <-ctx.Done():
@@ -235,35 +299,200 @@ func (r *Router) runHandlerLoop(ctx context.Context, h *Handler, fn HandlerFunc,
 				h.logger.Info("subscription closed", "topic", h.subscribeTopic)
 				return nil
 			}
-			r.processMessage(h, fn, msg)
+			r.processMessage(ctx, h, fn, msg)
 		}
 	}
 }
 
-// processMessage 处理单条消息：执行 handler、发布产出、Ack/Nack。
-func (r *Router) processMessage(h *Handler, fn HandlerFunc, msg *message.Message) {
+// runConcurrentLoop 并发处理消息（多 goroutine，信号量背压）。
+func (r *Router) runConcurrentLoop(ctx context.Context, h *Handler, fn HandlerFunc, msgCh <-chan *message.Message) error {
+	limit := h.concurrency
+	if h.maxInFlight > 0 && h.maxInFlight < limit {
+		limit = h.maxInFlight
+	}
+	h.logger.Info("concurrent loop started", "topic", h.subscribeTopic, "workers", limit)
+
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			h.logger.Info("handler stopped", "topic", h.subscribeTopic)
+			return nil
+		case msg, ok := <-msgCh:
+			if !ok {
+				wg.Wait()
+				h.logger.Info("subscription closed", "topic", h.subscribeTopic)
+				return nil
+			}
+			sem <- struct{}{} // 背压：达到上限时阻塞
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				r.processMessage(ctx, h, fn, msg)
+			}()
+		}
+	}
+}
+
+// runBatchLoop 批量处理消息（累积 batchSize 条或 batchTimeout 超时后触发）。
+func (r *Router) runBatchLoop(ctx context.Context, h *Handler, fn BatchFunc, msgCh <-chan *message.Message) error {
+	h.logger.Info("batch loop started", "topic", h.subscribeTopic,
+		"batchSize", h.batchSize, "batchTimeout", h.batchTimeout)
+
+	batch := make([]*message.Message, 0, h.batchSize)
+	timer := time.NewTimer(h.batchTimeout)
+	defer timer.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		r.processBatch(ctx, h, fn, batch)
+		batch = batch[:0]
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(h.batchTimeout)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			flush()
+			h.logger.Info("handler stopped", "topic", h.subscribeTopic)
+			return nil
+		case <-timer.C:
+			flush()
+			timer.Reset(h.batchTimeout)
+		case msg, ok := <-msgCh:
+			if !ok {
+				flush()
+				h.logger.Info("subscription closed", "topic", h.subscribeTopic)
+				return nil
+			}
+			batch = append(batch, msg)
+			if len(batch) >= h.batchSize {
+				flush()
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 消息处理
+// ---------------------------------------------------------------------------
+
+// processMessage 处理单条消息：重试 → 执行 handler → 发布产出 → Ack/Nack → DLQ。
+func (r *Router) processMessage(ctx context.Context, h *Handler, fn HandlerFunc, msg *message.Message) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			h.logger.Error("handler panic", "recovered", rec, "topic", h.subscribeTopic)
+			h.sendToDLQ(ctx, msg, fmt.Errorf("panic: %v", rec))
 			msg.Nack()
 		}
 	}()
 
-	producedMsgs, err := fn(msg)
-	if err != nil {
-		h.logger.Error("handler error", "error", err, "uuid", msg.UUID)
-		msg.Nack()
+	maxAttempts := h.maxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		producedMsgs, err := fn(msg)
+		if err != nil {
+			lastErr = err
+			if attempt < maxAttempts-1 {
+				h.logger.Warn("handler retry", "error", err, "attempt", attempt+1, "uuid", msg.UUID)
+			}
+			continue
+		}
+
+		// 发布产出消息（使用消息自身的 context 传播超时等）
+		if err := r.publishProduced(msg.Context(), h, producedMsgs); err != nil {
+			lastErr = err
+			if attempt < maxAttempts-1 {
+				h.logger.Warn("publish retry", "error", err, "attempt", attempt+1)
+			}
+			continue
+		}
+
+		msg.Ack()
 		return
 	}
 
-	// 发布产出消息
-	if h.publisher != nil && h.publishTopic != "" && len(producedMsgs) > 0 {
-		if err := h.publisher.Publish(h.publishTopic, producedMsgs...); err != nil {
-			h.logger.Error("publish error", "error", err, "topic", h.publishTopic)
-			msg.Nack()
-			return
+	// 所有重试耗尽
+	h.logger.Error("handler failed", "error", lastErr, "uuid", msg.UUID, "retries", h.maxRetries)
+	h.sendToDLQ(ctx, msg, lastErr)
+	msg.Nack()
+}
+
+// processBatch 处理一批消息：执行 batchHandler → 发布产出 → 全部 Ack/Nack。
+func (r *Router) processBatch(ctx context.Context, h *Handler, fn BatchFunc, msgs []*message.Message) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			h.logger.Error("batch handler panic", "recovered", rec, "count", len(msgs))
+			for _, m := range msgs {
+				m.Nack()
+			}
 		}
+	}()
+
+	producedMsgs, err := fn(msgs)
+	if err != nil {
+		h.logger.Error("batch handler error", "error", err, "count", len(msgs))
+		for _, m := range msgs {
+			m.Nack()
+		}
+		return
 	}
 
-	msg.Ack()
+	if err := r.publishProduced(ctx, h, producedMsgs); err != nil {
+		h.logger.Error("batch publish error", "error", err)
+		for _, m := range msgs {
+			m.Nack()
+		}
+		return
+	}
+
+	for _, m := range msgs {
+		m.Ack()
+	}
+}
+
+// publishProduced 发布产出消息，支持动态路由。
+func (r *Router) publishProduced(ctx context.Context, h *Handler, msgs []*message.Message) error {
+	if h.publisher == nil || len(msgs) == 0 {
+		return nil
+	}
+
+	// 无动态路由：一次性发布
+	if h.topicFunc == nil {
+		if h.publishTopic == "" {
+			return nil
+		}
+		return h.publisher.Publish(ctx, h.publishTopic, msgs...)
+	}
+
+	// 动态路由：按 topic 分组
+	groups := make(map[string][]*message.Message, 1)
+	for _, m := range msgs {
+		t := h.resolveTopic(m)
+		if t != "" {
+			groups[t] = append(groups[t], m)
+		}
+	}
+	for topic, batch := range groups {
+		if err := h.publisher.Publish(ctx, topic, batch...); err != nil {
+			return err
+		}
+	}
+	return nil
 }

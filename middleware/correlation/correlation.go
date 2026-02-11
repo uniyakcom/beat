@@ -6,7 +6,7 @@
 //
 //   - 产出消息 → 继承入站消息的 correlation_id
 //
-//     r.AddMiddleware(correlation.New())
+//     r.Use(correlation.New())
 package correlation
 
 import (

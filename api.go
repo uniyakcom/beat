@@ -17,9 +17,6 @@ type Event = core.Event
 // Handler 导出Handler类型
 type Handler = core.Handler
 
-// BusStats 导出运行时统计
-type BusStats = core.BusStats
-
 // PanicHandler 导出PanicHandler类型
 type PanicHandler = core.PanicHandler
 
@@ -159,12 +156,12 @@ func EmitMatchBatch(events []*Event) error {
 }
 
 // Stats 包级获取运行时统计
-func Stats() BusStats {
+func Stats() core.Stats {
 	return defaultBus.Stats()
 }
 
-// GracefulClose 包级优雅关闭默认 Bus
+// Drain 包级优雅关闭默认 Bus
 // 注意: 关闭后包级 API 将不可用，通常仅在进程退出前调用。
-func GracefulClose(timeout time.Duration) error {
-	return defaultBus.GracefulClose(timeout)
+func Drain(timeout time.Duration) error {
+	return defaultBus.Drain(timeout)
 }

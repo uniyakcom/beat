@@ -42,7 +42,7 @@ func TestRouterOn(t *testing.T) {
 
 	// 发布消息
 	for i := 0; i < 10; i++ {
-		_ = pub.Publish("order.created", message.NewMessage("", []byte("order-data")))
+		_ = pub.Publish(context.Background(), "order.created", message.New("", []byte("order-data")))
 	}
 
 	// 等待处理
@@ -76,12 +76,12 @@ func TestRouterAddHandler(t *testing.T) {
 	r := router.NewRouter()
 
 	// 接收 → 转换 → 发布
-	r.AddHandler(
+	r.Handle(
 		"transform",
 		"input.topic", inSub,
 		"output.topic", outPub,
 		func(msg *message.Message) ([]*message.Message, error) {
-			out := message.NewMessage("", append([]byte("processed:"), msg.Payload...))
+			out := message.New("", append([]byte("processed:"), msg.Payload...))
 			return []*message.Message{out}, nil
 		},
 	)
@@ -97,7 +97,7 @@ func TestRouterAddHandler(t *testing.T) {
 	<-r.Running()
 
 	// 发布到 input
-	_ = inPub.Publish("input.topic", message.NewMessage("", []byte("hello")))
+	_ = inPub.Publish(context.Background(), "input.topic", message.New("", []byte("hello")))
 
 	select {
 	case msg := <-outCh:
@@ -129,7 +129,7 @@ func TestRouterMiddleware(t *testing.T) {
 	// 追踪中间件执行顺序
 	var order []string
 
-	r.AddMiddleware(func(h router.HandlerFunc) router.HandlerFunc {
+	r.Use(func(h router.HandlerFunc) router.HandlerFunc {
 		return func(msg *message.Message) ([]*message.Message, error) {
 			order = append(order, "global-before")
 			result, err := h(msg)
@@ -159,7 +159,7 @@ func TestRouterMiddleware(t *testing.T) {
 	}()
 	<-r.Running()
 
-	_ = pub.Publish("mw.topic", message.NewMessage("", []byte("test")))
+	_ = pub.Publish(context.Background(), "mw.topic", message.New("", []byte("test")))
 	time.Sleep(200 * time.Millisecond)
 
 	cancel()
@@ -207,11 +207,11 @@ func TestRouterHandlerPanicRecovery(t *testing.T) {
 	<-r.Running()
 
 	// 触发 panic
-	_ = pub.Publish("panic.topic", message.NewMessage("", []byte("panic")))
+	_ = pub.Publish(context.Background(), "panic.topic", message.New("", []byte("panic")))
 	time.Sleep(100 * time.Millisecond)
 
 	// panic 后 handler 应继续运行
-	_ = pub.Publish("panic.topic", message.NewMessage("", []byte("normal")))
+	_ = pub.Publish(context.Background(), "panic.topic", message.New("", []byte("normal")))
 	time.Sleep(100 * time.Millisecond)
 
 	if got := afterPanic.Load(); got != 1 {

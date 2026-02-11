@@ -8,6 +8,7 @@ package message
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Message 消息传输单元
@@ -18,11 +19,17 @@ type Message struct {
 	// UUID 消息唯一标识（自动生成或外部指定）
 	UUID string
 
+	// Key 分区/路由键（Kafka 分区、Redis Stream 分组等）
+	Key string
+
 	// Metadata 消息元数据（链路追踪 ID、来源、优先级等）
 	Metadata Metadata
 
 	// Payload 消息负载（业务数据）
 	Payload []byte
+
+	// Timestamp 消息创建时间
+	Timestamp time.Time
 
 	ctx      context.Context
 	ackCh    chan struct{}
@@ -31,18 +38,38 @@ type Message struct {
 	nackOnce sync.Once
 }
 
-// NewMessage 创建新消息。uuid 为空时自动生成。
-func NewMessage(uuid string, payload []byte) *Message {
+// New 创建新消息。uuid 为空时自动生成。
+func New(uuid string, payload []byte) *Message {
 	if uuid == "" {
 		uuid = NewUUID()
 	}
 	return &Message{
-		UUID:     uuid,
-		Metadata: make(Metadata),
-		Payload:  payload,
-		ctx:      context.Background(),
-		ackCh:    make(chan struct{}),
-		nackCh:   make(chan struct{}),
+		UUID:      uuid,
+		Metadata:  make(Metadata),
+		Payload:   payload,
+		Timestamp: time.Now(),
+		ctx:       context.Background(),
+		ackCh:     make(chan struct{}),
+		nackCh:    make(chan struct{}),
+	}
+}
+
+// NewPub 创建用于发布的轻量消息（不分配 Ack/Nack channel）。
+//
+// 适用于纯发布场景（不需要 Subscriber 端的 Ack/Nack 确认），
+// 相比 New 减少 2 次 channel 分配，降低 GC 压力。
+//
+// 注意：对该消息调用 Ack()/Nack() 会 panic。如需 Ack 语义请使用 New。
+func NewPub(uuid string, payload []byte) *Message {
+	if uuid == "" {
+		uuid = NewUUID()
+	}
+	return &Message{
+		UUID:      uuid,
+		Metadata:  make(Metadata),
+		Payload:   payload,
+		Timestamp: time.Now(),
+		ctx:       context.Background(),
 	}
 }
 
@@ -88,7 +115,9 @@ func (m *Message) Copy() *Message {
 	payload := make([]byte, len(m.Payload))
 	copy(payload, m.Payload)
 
-	msg := NewMessage("", payload)
+	msg := New("", payload)
+	msg.Key = m.Key
+	msg.Timestamp = m.Timestamp
 	for k, v := range m.Metadata {
 		msg.Metadata[k] = v
 	}

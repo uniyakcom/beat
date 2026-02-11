@@ -491,8 +491,8 @@ func (p *Bus) Close() {
 	p.wg.Wait()
 }
 
-// GracefulClose 优雅关闭（等待队列排空或超时）
-func (p *Bus) GracefulClose(timeout time.Duration) error {
+// Drain 优雅关闭（等待队列排空或超时）
+func (p *Bus) Drain(timeout time.Duration) error {
 	if timeout <= 0 {
 		p.Close()
 		return nil
@@ -511,17 +511,17 @@ func (p *Bus) GracefulClose(timeout time.Duration) error {
 }
 
 // Stats 获取运行时统计（实现 core.Bus 接口）
-func (p *Bus) Stats() core.BusStats {
+func (p *Bus) Stats() core.Stats {
 	var depth int64
 	for _, rb := range p.buffers {
 		d := rb.tail.Load() - rb.head.Load()
 		depth += int64(d)
 	}
-	return core.BusStats{
-		EventsEmitted:   int64(p.emitted.Load()),
-		EventsProcessed: int64(p.processed.Load()),
-		Panics:          p.panics.Read(),
-		QueueDepth:      depth,
+	return core.Stats{
+		Emitted:   int64(p.emitted.Load()),
+		Processed: int64(p.processed.Load()),
+		Panics:    p.panics.Read(),
+		Depth:     depth,
 	}
 }
 

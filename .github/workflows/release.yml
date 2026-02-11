@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '指定版本号 (如 v1.2.3)，留空则从 commit 自动推断'
+        required: false
+        type: string
+      bump:
+        description: '递增类型 (version 为空时生效)'
+        required: false
+        type: choice
+        default: auto
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+      - run: go test ./... -race -short -count=1
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Skip if already tagged
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        id: check
+        run: |
+          if git describe --exact-match HEAD 2>/dev/null; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip if [skip release]
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        id: msg
+        run: |
+          MSG=$(git log -1 --pretty=format:"%s")
+          if echo "$MSG" | grep -qiE '\[(skip release|no release)\]'; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine version
+        id: version
+        if: steps.check.outputs.skip != 'true' && steps.msg.outputs.skip != 'true'
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+          # --- Tag push: 直接使用 ---
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "mode=tag" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # --- workflow_dispatch 指定版本 ---
+          if [[ -n "${{ inputs.version }}" ]]; then
+            V="${{ inputs.version }}"
+            [[ "$V" != v* ]] && V="v$V"
+            echo "version=$V" >> $GITHUB_OUTPUT
+            echo "mode=manual" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # --- 自动递增 ---
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_TAG#v}"
+
+          BUMP="${{ inputs.bump }}"
+          [ -z "$BUMP" ] && BUMP="auto"
+
+          if [[ "$BUMP" == "auto" ]]; then
+            COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"%s" 2>/dev/null || git log --pretty=format:"%s")
+            if echo "$COMMITS" | grep -qE "^feat(\(.+\))?!:|BREAKING CHANGE"; then
+              BUMP="major"
+            elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+              BUMP="minor"
+            else
+              BUMP="patch"
+            fi
+          fi
+
+          case $BUMP in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          echo "version=v${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
+          echo "mode=auto-${BUMP}" >> $GITHUB_OUTPUT
+
+      - name: Create tag
+        if: steps.version.outputs.mode != 'tag' && steps.version.outputs.version != '' && steps.check.outputs.skip != 'true' && steps.msg.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a ${{ steps.version.outputs.version }} -m "Release ${{ steps.version.outputs.version }}"
+          git push origin ${{ steps.version.outputs.version }}
+
+      - name: Generate changelog
+        if: steps.version.outputs.version != '' && steps.check.outputs.skip != 'true' && steps.msg.outputs.skip != 'true'
+        id: changelog
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          PREV=${{ steps.version.outputs.latest_tag }}
+
+          if [[ "$PREV" == "v0.0.0" ]]; then
+            LOG=$(git log --pretty=format:"- %s (%h)" 2>/dev/null || echo "- Initial release")
+          else
+            LOG=$(git log --pretty=format:"- %s (%h)" ${PREV}..HEAD 2>/dev/null || echo "- Improvements")
+          fi
+
+          FEAT=$(echo "$LOG" | grep -E "^- feat" || true)
+          FIX=$(echo "$LOG" | grep -E "^- fix" || true)
+          OTHER=$(echo "$LOG" | grep -vE "^- (feat|fix)" || true)
+
+          {
+            echo "body<<EOF"
+            echo "## Beat ${VERSION}"
+            echo ""
+            if [[ -n "$FEAT" ]]; then
+              echo "### ✨ Features"
+              echo "$FEAT"
+              echo ""
+            fi
+            if [[ -n "$FIX" ]]; then
+              echo "### 🐛 Fixes"
+              echo "$FIX"
+              echo ""
+            fi
+            if [[ -n "$OTHER" ]]; then
+              echo "### 📦 Other"
+              echo "$OTHER"
+              echo ""
+            fi
+            echo "---"
+            echo ""
+            echo '```bash'
+            echo "go get github.com/uniyakcom/beat@${VERSION}"
+            echo '```'
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Create release
+        if: steps.version.outputs.version != '' && steps.check.outputs.skip != 'true' && steps.msg.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: ${{ steps.changelog.outputs.body }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

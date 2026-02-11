@@ -2,7 +2,7 @@
 //
 // 支持指数退避、最大重试次数、自定义判断函数。
 //
-//	r.AddMiddleware(retry.New(retry.Config{
+//	r.Use(retry.New(retry.Config{
 //	    MaxRetries:      3,
 //	    InitialInterval: 100 * time.Millisecond,
 //	}))

@@ -1,0 +1,33 @@
+name: Format Check
+
+on:
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Check formatting
+        run: |
+          BAD=$(gofmt -l . | grep -v '^_' || true)
+          if [ -n "$BAD" ]; then
+            echo "❌ 以下文件未格式化:"
+            echo "$BAD"
+            echo ""
+            echo "请运行: gofmt -w ."
+            exit 1
+          fi
+          echo "✅ 格式检查通过"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -short -count=1
