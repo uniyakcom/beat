@@ -423,6 +423,7 @@ func (p *Bus) Off(id uint64) {
 }
 
 // Emit 发射单个事件（无锁，直接Push到RingBuffer）
+// 快慢路径分离: 慢路径（buffer满）提取为独立函数，避免编译器内联快速路径时引入慢路径代码
 func (p *Bus) Emit(evt *core.Event) error {
 	if evt == nil || p.closed.Load() {
 		return nil
@@ -432,16 +433,27 @@ func (p *Bus) Emit(evt *core.Event) error {
 
 	shard := p.getShard(evt.Type)
 	if !p.buffers[shard].push(evt) {
-		// Buffer满时，尝试其他分片（负载均衡）
-		for i := 0; i < p.numShards; i++ {
-			if p.buffers[i].push(evt) {
-				return nil
-			}
-		}
-		// 所有buffer都满，同步降级处理避免丢数据
-		p.processBatch([]*core.Event{evt})
+		// 慢路径: buffer满，尝试其他分片或同步降级
+		p.emitSlow(evt, shard)
 	}
 	return nil
+}
+
+// emitSlow buffer 满时的降级处理（独立函数，不影响 Emit 内联）
+//
+//go:noinline
+func (p *Bus) emitSlow(evt *core.Event, skipShard uint64) {
+	// 尝试其他分片（负载均衡）
+	for i := 0; i < p.numShards; i++ {
+		if uint64(i) == skipShard {
+			continue
+		}
+		if p.buffers[i].push(evt) {
+			return
+		}
+	}
+	// 所有buffer都满，同步降级处理避免丢数据
+	p.processBatch([]*core.Event{evt})
 }
 
 // EmitMatch 发射单个事件（匹配模式）
@@ -450,6 +462,7 @@ func (p *Bus) EmitMatch(evt *core.Event) error {
 }
 
 // EmitBatch 批量发射事件
+// 安全: 复用 Emit 逻辑（包含 emitSlow 降级），避免事件丢失
 func (p *Bus) EmitBatch(events []*core.Event) error {
 	if len(events) == 0 || p.closed.Load() {
 		return nil
@@ -459,9 +472,7 @@ func (p *Bus) EmitBatch(events []*core.Event) error {
 		if evt == nil {
 			continue
 		}
-		p.emitted.Add(1)
-		shard := p.getShard(evt.Type)
-		p.buffers[shard].push(evt)
+		_ = p.Emit(evt)
 	}
 	return nil
 }

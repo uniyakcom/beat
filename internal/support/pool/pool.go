@@ -8,9 +8,11 @@ package pool
 
 import (
 	"sync"
-	"unsafe"
+	"sync/atomic"
+	"time"
 
 	"github.com/uniyakcom/beat/core"
+	"github.com/uniyakcom/beat/internal/support/noop"
 )
 
 const arenaChunkSize = 64 * 1024
@@ -44,23 +46,30 @@ type EventPool struct {
 	// Arena 配置和管理
 	EnableArena  bool
 	currentArena *ArenaChunk
-	arenaLock    sync.Mutex
+	arenaLock    noop.Mutex // 可切换锁: 单线程场景零开销
 	arenaPool    sync.Pool
+
+	// Arena 活跃 chunk 计数（大小保护，防止内存膨胀）
+	activeChunks atomic.Int32
+	maxChunks    int32 // 超过此值降级 make（默认 256 = 16MB）
 }
 
 // New 创建事件对象池
 func New() *EventPool {
 	p := &EventPool{
 		EnableArena: true, // 默认启用 Arena
+		maxChunks:   256,  // 最多 256 个 64KB chunk = 16MB
 		pool: sync.Pool{
 			New: func() interface{} { return &core.Event{} },
 		},
 		arenaPool: sync.Pool{
 			New: func() interface{} { return newArenaChunk() },
 		},
+		arenaLock: noop.NewMutex(true), // 默认并发安全
 	}
 	// 初始化第一个 Arena
 	p.currentArena = p.arenaPool.Get().(*ArenaChunk)
+	p.activeChunks.Store(1)
 	return p
 }
 
@@ -79,28 +88,42 @@ func (p *EventPool) Release(evt *core.Event) {
 	evt.ID = ""
 	evt.Source = ""
 	evt.Metadata = nil
-	*(*[24]byte)(unsafe.Pointer(&evt.Timestamp)) = [24]byte{}
+	evt.Timestamp = time.Time{} // 安全的零值赋值（替代 unsafe 清零）
 	p.pool.Put(evt)
 }
 
 // AllocData 分配 Data
 // 若 EnableArena=true，从 Arena 分配（无 malloc）
-// 若 EnableArena=false，直接 make（传统方式）
+// 若 EnableArena=false 或活跃 chunk 超限，直接 make（传统方式）
 func (p *EventPool) AllocData(n int) []byte {
 	if !p.EnableArena {
 		return make([]byte, n)
 	}
 
+	// 超大分配直接 make（不污染 Arena）
+	if n > arenaChunkSize/2 {
+		return make([]byte, n)
+	}
+
 	p.arenaLock.Lock()
-	defer p.arenaLock.Unlock()
 
 	buf := p.currentArena.Alloc(n)
 	if buf == nil {
-		// 当前 Arena 满，切换新 Arena
+		// 当前 Arena 满，检查是否超过 chunk 上限
+		if p.activeChunks.Load() >= p.maxChunks {
+			p.arenaLock.Unlock()
+			return make([]byte, n) // 降级 make，防止内存膨胀
+		}
+		// 旧 chunk 重置 offset 后归还（避免从 pool 取出时 offset 残留）
+		p.currentArena.offset = 0
 		p.arenaPool.Put(p.currentArena)
 		p.currentArena = p.arenaPool.Get().(*ArenaChunk)
+		p.currentArena.offset = 0 // 确保新 chunk offset 从 0 开始
+		// 注: activeChunks 不递增——旧 chunk 归还 pool 与新 chunk 取出抵消
 		buf = p.currentArena.Alloc(n)
 	}
+
+	p.arenaLock.Unlock()
 	return buf
 }
 

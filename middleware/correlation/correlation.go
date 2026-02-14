@@ -20,12 +20,13 @@ const (
 )
 
 // New 创建 correlation ID 传播中间件。
+// 使用 FastUUID 生成高性能 correlation ID（非密码学安全但足够唯一）。
 func New() router.Middleware {
 	return func(h router.HandlerFunc) router.HandlerFunc {
 		return func(msg *message.Message) ([]*message.Message, error) {
 			id := msg.Metadata.Get(HeaderCorrelationID)
 			if id == "" {
-				id = message.NewUUID()
+				id = message.FastUUID() // 使用 Per-P 无锁 FastUUID
 				msg.Metadata.Set(HeaderCorrelationID, id)
 			}
 
@@ -33,6 +34,9 @@ func New() router.Middleware {
 
 			// 将 correlation_id 传播到所有产出消息
 			for _, p := range produced {
+				if p == nil {
+					continue
+				}
 				if p.Metadata.Get(HeaderCorrelationID) == "" {
 					p.Metadata.Set(HeaderCorrelationID, id)
 				}

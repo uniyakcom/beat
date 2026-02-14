@@ -7,8 +7,15 @@ package message
 
 import (
 	"context"
-	"sync"
+	"sync/atomic"
 	"time"
+)
+
+// 消息确认状态常量（CAS 替代 sync.Once，节省 ~16 字节/消息）
+const (
+	msgPending uint32 = 0 // 待处理
+	msgAcked   uint32 = 1 // 已确认
+	msgNacked  uint32 = 2 // 已拒绝
 )
 
 // Message 消息传输单元
@@ -31,11 +38,10 @@ type Message struct {
 	// Timestamp 消息创建时间
 	Timestamp time.Time
 
-	ctx      context.Context
-	ackCh    chan struct{}
-	nackCh   chan struct{}
-	ackOnce  sync.Once
-	nackOnce sync.Once
+	ctx    context.Context
+	ackCh  chan struct{}
+	nackCh chan struct{}
+	state  atomic.Uint32 // CAS 状态: pending/acked/nacked（替代 2 个 sync.Once）
 }
 
 // New 创建新消息。uuid 为空时自动生成。
@@ -74,17 +80,26 @@ func NewPub(uuid string, payload []byte) *Message {
 }
 
 // Ack 确认消息已成功处理。只能调用一次，重复调用安全但无效。
+// 使用 CAS 替代 sync.Once，节省 ~16 字节/消息。
+// 对 NewPub 创建的消息（无 ackCh）安全调用，直接忽略。
 func (m *Message) Ack() {
-	m.ackOnce.Do(func() {
+	if m.ackCh == nil {
+		return
+	}
+	if m.state.CompareAndSwap(msgPending, msgAcked) {
 		close(m.ackCh)
-	})
+	}
 }
 
 // Nack 拒绝消息（处理失败）。只能调用一次，重复调用安全但无效。
+// 对 NewPub 创建的消息（无 nackCh）安全调用，直接忽略。
 func (m *Message) Nack() {
-	m.nackOnce.Do(func() {
+	if m.nackCh == nil {
+		return
+	}
+	if m.state.CompareAndSwap(msgPending, msgNacked) {
 		close(m.nackCh)
-	})
+	}
 }
 
 // Acked 返回一个 channel，在 Ack() 被调用后关闭。

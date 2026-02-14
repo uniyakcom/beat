@@ -16,6 +16,7 @@
 - **极致性能**: Sync ~10 ns 单线程（96M ops/s），Async ~27 ns 高并发（37M ops/s）
 - **零 CAS 热路径**: Per-P SPSC ring，atomic Load/Store only（x86 ≈ 普通 MOV）
 - **模式匹配**: 通配符 `*`（单层）和 `**`（多层）
+- **`[256]bool` 查表**: 通配符检测零分支
 
 ### 消息框架
 
@@ -185,11 +186,12 @@ bus, _ := beat.Option(&beat.Profile{Name: "async", Conc: 10000, TPS: 50000})
 
 ```go
 type Message struct {
-    UUID      string            // 消息唯一标识（自动生成 UUID v4）
+    UUID      string            // 消息唯一标识（Per-P 批量 UUID v4）
     Key       string            // 分区/路由键（Kafka partition、Redis key）
     Metadata  Metadata          // 元数据 map[string]string
     Payload   []byte            // 消息体
     Timestamp time.Time         // 创建时间戳（自动设置）
+    // 内部: state atomic.Uint32 — CAS 状态机管理 Ack/Nack（替代 2×sync.Once）
 }
 
 // 构造
@@ -334,11 +336,17 @@ r := router.NewRouter()
 // 全局中间件（洋葱模型：外层先执行）
 r.Use(
     recoverer.New(),                          // panic → error 恢复
-    correlation.New(),                        // correlation_id 传播
+    correlation.New(),                        // correlation_id 传播（FastUUID）
     logging.New(slog.Default()),              // slog 处理日志
     timeout.New(5 * time.Second),             // 消息处理超时
     retry.New(retry.Config{MaxRetries: 3}),   // 指数退避重试
 )
+
+// Abandoned Context 模式（超时后 handler 可继续完成 DB 事务等清理）
+r.Use(timeout.NewWithConfig(timeout.Config{
+    Timeout:      5 * time.Second,
+    AllowOverrun: true,   // 超时仅切断 Context，不中断 goroutine
+}))
 
 // Handler 专属中间件（在全局之后执行）
 handler.AddMiddleware(customMiddleware)
@@ -487,7 +495,7 @@ beat/
 │   ├── metadata.go          # map[string]string 元数据
 │   ├── publisher.go         # Publisher 接口（ctx 感知）
 │   ├── subscriber.go        # Subscriber 接口
-│   └── uuid.go              # UUID v4 + FastUUID（零依赖）
+│   └── uuid.go              # UUID v4（Per-P 批量生成）+ FastUUID（零互斥）
 ├── router/                   # 消息路由器
 │   ├── router.go            # 调度中心（顺序/并发/批量循环、DLQ、动态路由）
 │   ├── handler.go           # Handler 配置（并发/批量/DLQ/流控）
@@ -503,10 +511,61 @@ beat/
 ├── marshal/                  # 序列化（Codec 接口 + JSON）
 ├── optimize/                 # Profile → Advisor → Factory
 ├── internal/impl/           # 三预设实现（sync / async / flow）
-├── internal/support/        # SPSC ring、对象池等基础设施
+├── internal/support/        # SPSC ring、对象池、可切换锁等基础设施
+│   ├── noop/                # 可切换锁（nil mutex = 零开销）
+│   ├── pool/                # 事件对象池 + Arena 内存管理
+│   ├── spsc/                # Per-P SPSC ring buffer
+│   └── wpool/               # Worker pool（done channel 安全关闭）
 ├── util/                    # PerCPUCounter 等工具
 └── api.go                   # 统一 API 入口
 ```
+
+---
+
+## 性能优化技术
+
+### P0 — 热路径零分配
+
+| 技术 | 文件 | 说明 |
+|------|------|------|
+| **Per-P UUID 批量生成** | `message/uuid.go` | `NewUUID()` 使用 Per-P `cryptoBuf[64]`，一次 `crypto/rand.Read(512B)` 生成 32 个 UUID；`FastUUID()` 使用 Per-P `math/rand` + `go:linkname procPin/procUnpin`，热路径零互斥 |
+| **CAS 状态机** | `message/message.go` | `atomic.Uint32` 状态字段（4 字节）替代 `2×sync.Once`（~24 字节），Ack/Nack 单原子操作 |
+| **可切换锁 (nil mutex)** | `internal/support/noop/` | `noop.Mutex` / `noop.RWMutex`：nil 指针 = 零开销空操作，对象池竞态保护可按需开关 |
+| **固定数组** | `core/matcher.go` | `var pathBuf [maxTrieDepth+1]*node` 栈分配替代 `make([]*node)`，Trie Remove 零堆分配 |
+| **`[256]bool` 查表** | `core/matcher.go` | `wildcardChars[s[i]]` 替代 `s[i] == '*'`，零分支通配符检测 |
+
+### P1 — 资源保护与抗压
+
+| 技术 | 文件 | 说明 |
+|------|------|------|
+| **Arena 内存池保护** | `internal/support/pool/pool.go` | `maxChunks` 限制总 chunk 数（默认 256 = 16MB）；超大分配（> chunkSize/2）旁路至 `make`；超限时降级为普通分配 |
+| **Worker Pool 安全关闭** | `internal/support/wpool/wpool.go` | `done chan struct{}` + `select` 模式替代 `close(channel)`，Submit/Release 全路径无 panic |
+| **快/慢路径分离** | `internal/impl/flow/bus.go` | `emitSlow` 提取为 `//go:noinline` 独立函数，正常路径的指令缓存命中率不受异常分支污染 |
+
+### P2 — 中间件增强
+
+| 技术 | 文件 | 说明 |
+|------|------|------|
+| **Abandoned Context** | `middleware/timeout/timeout.go` | `Config{AllowOverrun: true}` 模式：超时后 handler goroutine 继续执行，使用仅保留 `Value()` 的 `detachedContext`（Done/Err/Deadline 返回零值），避免 DB 事务半提交 |
+| **FastUUID 相关性 ID** | `middleware/correlation/` | 相关性中间件使用 `message.FastUUID()` 替代 `NewUUID()`，批量事件流中减少 `crypto/rand` 系统调用 |
+
+---
+
+## 安全设计
+
+经过完整的代码安全审计，以下问题已识别并修复：
+
+| 等级 | 问题 | 修复方案 |
+|------|------|---------|
+| **Critical** | `detachedContext` 泄漏父 Context 的取消信号 | `Done()→nil`、`Err()→nil`、`Deadline()→(zero,false)`，仅保留 `Value()` |
+| **Critical** | `wpool.Submit` 向已关闭 channel 发送导致 panic | `done chan struct{}` + `select` 全路径保护，`Release()` 使用 CAS 幂等关闭 |
+| **High** | `NewPub` 消息的 `Ack()/Nack()` close nil channel | CAS 前增加 `if m.ackCh == nil { return }` nil 守卫 |
+| **High** | Arena chunk 从 `sync.Pool` 取出时偏移量未重置 | Put/Get 时显式重置 `offset = 0` |
+| **High** | `activeChunks` 计数器只增不减导致过早降级 | 移除独立计数器，依赖 `sync.Pool` 自身生命周期管理 |
+| **High** | `flow.EmitBatch` 忽略 `push()` 返回值导致事件丢失 | 复用 `Emit()` 方法（含 `emitSlow` 降级回退） |
+| **Medium** | `matcher.Off` 的 Remove 调用次数与 Add 不匹配 | `for range subs { matcher.Remove(k) }` 按订阅数循环 |
+| **Medium** | `correlation` 中间件产出消息可能为 nil | 增加 `if p == nil { continue }` 空指针守卫 |
+| **Medium** | Timestamp 使用 `unsafe` 指针清零 | 改为安全的 `evt.Timestamp = time.Time{}` 赋值 |
 
 ---
 

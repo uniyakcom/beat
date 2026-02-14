@@ -207,7 +207,10 @@ func (e *Bus) Off(id uint64) {
 		if len(filtered) > 0 {
 			newByID[k] = filtered
 		} else {
-			e.matcher.Remove(k)
+			// 安全: Remove 次数等于该 pattern 的 Add 次数（refCount 匹配）
+			for range subs {
+				e.matcher.Remove(k)
+			}
 		}
 	}
 	e.subs.Store(buildSnapshot(newByID))

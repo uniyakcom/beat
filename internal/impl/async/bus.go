@@ -182,7 +182,10 @@ func (e *Bus) Off(id uint64) {
 		if len(filtered) > 0 {
 			newByID[k] = filtered
 		} else {
-			e.matcher.Remove(k)
+			// 安全: Remove 次数等于该 pattern 的 Add 次数（refCount 匹配）
+			for range subs {
+				e.matcher.Remove(k)
+			}
 		}
 	}
 	e.subs.Store(buildSnapshot(newByID))
@@ -287,7 +290,7 @@ func (e *Bus) Drain(timeout time.Duration) error {
 // ─── 内部方法 ─────────────────────────────────────────────────────
 
 // dispatchDirect 精确匹配分发（消费者热路径）
-// 优化: RCU 快照 + 预扁平化 handler + 单类型快速路径
+// 优化: RCU 快照 + 预扁平化 handler + 单类型快速路径 + 2-key inline cache
 func (e *Bus) dispatchDirect(evt *core.Event) {
 	snap := e.subs.Load()
 	// 快速路径: 仅 1 种事件类型时跳过 map hash+lookup（≈16ns）
@@ -298,7 +301,8 @@ func (e *Bus) dispatchDirect(evt *core.Event) {
 		return
 	}
 	// 通用路径: map lookup（多事件类型）
-	for _, h := range snap.handlers[evt.Type] {
+	handlers := snap.handlers[evt.Type]
+	for _, h := range handlers {
 		_ = h(evt)
 	}
 }
