@@ -141,6 +141,9 @@ type Bus struct {
 	wg   sync.WaitGroup
 	done chan struct{}
 
+	// 生产者→消费者唤醒信号（非阻塞写入，缓冲 1 即可）
+	notify chan struct{}
+
 	// 统计信息
 	emitted   atomic.Uint64 // 直接 atomic，消除 PerCPU 间接
 	processed atomic.Uint64
@@ -180,6 +183,7 @@ func New(stages []Stage, batchSz int, timeout time.Duration) *Bus {
 		batchSz:      batchSz,
 		batchTimeout: timeout,
 		done:         make(chan struct{}),
+		notify:       make(chan struct{}, 1),
 		panics:       util.NewPerCPUCounter(),
 		slowBuf:      make([]*core.Event, 1),
 	}
@@ -222,31 +226,34 @@ func (p *Bus) getShard(eventType string) uint64 {
 	return h & p.shardMask
 }
 
-// consumer 消费者协程（LockOSThread + 批量处理）
-// LockOSThread: 绑定OS线程，保持L1/L2 cache热度
+// consumer 消费者协程（批量处理 + 信号量阻塞）
+// 使用 select 阻塞（而非忙等待），避免在 VM 环境中耗尽所有 vCPU。
+// 不再使用 LockOSThread — Go 调度器的 P-M 绑定已足够保证 cache 局部性。
 func (p *Bus) consumer(shardIdx int) {
 	defer p.wg.Done()
-
-	// 绑定OS线程 — 消除Go调度器在M间迁移G的开销
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 
 	rb := p.buffers[shardIdx]
 	batch := make([]*core.Event, p.batchSz)
 	ticker := time.NewTicker(p.batchTimeout)
 	defer ticker.Stop()
 
-	lastProcessed := time.Now()
-	idle := 0
-
 	for {
+		// 先尝试无阻塞批量弹出
+		count := rb.popBatch(batch)
+		if count > 0 {
+			p.safeProcessBatch(batch[:count])
+			// 有数据时继续紧凑轮询（短窗口内可能还有更多数据）
+			continue
+		}
+
+		// 无数据时阻塞等待（关键修复：不再忙等待）
 		select {
 		case <-p.done:
 			// 关闭时处理剩余事件
 			for {
-				count := rb.popBatch(batch)
-				if count > 0 {
-					p.safeProcessBatch(batch[:count])
+				n := rb.popBatch(batch)
+				if n > 0 {
+					p.safeProcessBatch(batch[:n])
 				} else {
 					break
 				}
@@ -254,35 +261,17 @@ func (p *Bus) consumer(shardIdx int) {
 			return
 
 		case <-ticker.C:
-			// 超时触发：处理已有事件
-			count := rb.popBatch(batch)
-			if count > 0 {
-				p.safeProcessBatch(batch[:count])
-				lastProcessed = time.Now()
-				idle = 0
+			// 定时唤醒：处理可能积压的事件
+			n := rb.popBatch(batch)
+			if n > 0 {
+				p.safeProcessBatch(batch[:n])
 			}
 
-		default:
-			// 批量弹出事件
-			count := rb.popBatch(batch)
-			if count > 0 {
-				p.safeProcessBatch(batch[:count])
-				lastProcessed = time.Now()
-				idle = 0
-			} else {
-				idle++
-				// 空闲时检查超时
-				if time.Since(lastProcessed) > p.batchTimeout {
-					ticker.Reset(p.batchTimeout)
-				}
-				// 三级背压: spin → Gosched → Sleep
-				if idle <= 32 {
-					runtime.Gosched()
-				} else if idle <= 256 {
-					time.Sleep(time.Microsecond)
-				} else {
-					time.Sleep(10 * time.Microsecond)
-				}
+		case <-p.notify:
+			// 生产者信号唤醒：立即消费
+			n := rb.popBatch(batch)
+			if n > 0 {
+				p.safeProcessBatch(batch[:n])
 			}
 		}
 	}
@@ -506,6 +495,13 @@ func (p *Bus) Emit(evt *core.Event) error {
 		// 慢路径: buffer满，尝试其他分片或同步降级
 		p.emitSlow(evt, shard)
 	}
+
+	// 非阻塞唤醒消费者
+	select {
+	case p.notify <- struct{}{}:
+	default:
+	}
+
 	return nil
 }
 
@@ -561,6 +557,13 @@ func (p *Bus) EmitBatch(events []*core.Event) error {
 			p.emitSlow(evt, shard)
 		}
 	}
+
+	// 非阻塞唤醒消费者
+	select {
+	case p.notify <- struct{}{}:
+	default:
+	}
+
 	return nil
 }
 
