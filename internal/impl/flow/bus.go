@@ -24,9 +24,11 @@ type subscription struct {
 
 // flowSnapshot CoW 快照 — 预构建 handler map，消除消费者侧双循环
 type flowSnapshot struct {
-	subs        []*subscription
-	handlers    map[string][]core.Handler // key=pattern, 扁平化 handler
-	hasWildcard bool                      // 是否包含通配符模式
+	subs           []*subscription
+	handlers       map[string][]core.Handler // key=pattern, 扁平化 handler
+	singleKey      string                    // 仅 1 种事件类型时的 key（跳过 map hash+lookup）
+	singleHandlers []core.Handler            // 仅 1 种事件类型时的 handler 列表
+	hasWildcard    bool                      // 是否包含通配符模式
 }
 
 // slot Disruptor风格槽位（与queue包一致的设计）
@@ -318,7 +320,14 @@ func (p *Bus) processBatch(events []*core.Event) {
 	// 调用订阅handler
 	snap := p.subsPtr.Load()
 	if len(snap.handlers) > 0 && len(current) > 0 {
-		if !snap.hasWildcard {
+		if snap.singleKey != "" {
+			// 最快路径: 仅 1 种事件类型，跳过 map hash+lookup
+			for _, evt := range current {
+				for _, h := range snap.singleHandlers {
+					h(evt)
+				}
+			}
+		} else if !snap.hasWildcard {
 			// 快速路径: 仅精确匹配，直接 map 索引，零分配
 			for _, evt := range current {
 				for _, h := range snap.handlers[evt.Type] {
@@ -365,7 +374,12 @@ func (p *Bus) processSingle(evt *core.Event) {
 	// 调用订阅 handler
 	snap := p.subsPtr.Load()
 	if len(snap.handlers) > 0 {
-		if !snap.hasWildcard {
+		if snap.singleKey != "" {
+			// 最快路径: 仅 1 种事件类型，跳过 map hash+lookup
+			for _, h := range snap.singleHandlers {
+				h(evt)
+			}
+		} else if !snap.hasWildcard {
 			for _, h := range snap.handlers[evt.Type] {
 				h(evt)
 			}
@@ -397,7 +411,16 @@ func buildFlowSnapshot(subs []*subscription) *flowSnapshot {
 			hasWild = true
 		}
 	}
-	return &flowSnapshot{subs: subs, handlers: handlers, hasWildcard: hasWild}
+	snap := &flowSnapshot{subs: subs, handlers: handlers, hasWildcard: hasWild}
+	// 单类型快速路径：仅 1 种精确匹配事件类型时缓存 key+handlers，跳过 map hash+lookup（≈10-16ns/event）
+	// 注意: 通配符模式不能走此路径，必须经过 TrieMatcher
+	if !hasWild && len(handlers) == 1 {
+		for k, hs := range handlers {
+			snap.singleKey = k
+			snap.singleHandlers = hs
+		}
+	}
+	return snap
 }
 
 // containsWildcard 检查 pattern 是否包含通配符
@@ -522,17 +545,21 @@ func (p *Bus) UnsafeEmitMatch(evt *core.Event) error {
 }
 
 // EmitBatch 批量发射事件
-// 安全: 复用 Emit 逻辑（包含 emitSlow 降级），避免事件丢失
+// 优化: 单次 atomic 计数整批，避免 N 次 atomic 开销
 func (p *Bus) EmitBatch(events []*core.Event) error {
 	if len(events) == 0 || p.closed.Load() {
 		return nil
 	}
 
+	p.emitted.Add(uint64(len(events)))
 	for _, evt := range events {
 		if evt == nil {
 			continue
 		}
-		_ = p.Emit(evt)
+		shard := p.getShard(evt.Type)
+		if !p.buffers[shard].push(evt) {
+			p.emitSlow(evt, shard)
+		}
 	}
 	return nil
 }

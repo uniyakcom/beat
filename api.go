@@ -48,21 +48,21 @@ func New() (Bus, error) {
 
 // ForSync 创建同步直调 Bus
 // 用途: RPC调用、API中间件、权限验证
-// 性能: ~10.5ns/op 单线程，error 返回，零开销
+// 性能: Emit ~21ns/op，UnsafeEmit ~8ns/op，error 返回，零开销
 func ForSync() (Bus, error) {
 	return Option(optimize.Sync())
 }
 
 // ForAsync 创建 Per-P SPSC 异步高吞吐 Bus
 // 用途: 发布订阅、日志聚合、实时推送、高频交易
-// 性能: ~26ns/op 高并发，零 CAS，零分配
+// 性能: ~38ns/op 单线程，~17ns/op 高并发，零 CAS，零分配
 func ForAsync() (Bus, error) {
 	return Option(optimize.Async())
 }
 
 // ForFlow 创建多阶段 Pipeline 流处理 Bus
 // 用途: 实时ETL、窗口聚合、批量数据加载
-// 性能: ~48ns/op 单线程，多阶段 Pipeline，批处理窗口
+// 性能: ~65ns/op 单线程，多阶段 Pipeline，批处理窗口
 func ForFlow() (Bus, error) {
 	return Option(optimize.Flow())
 }

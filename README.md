@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/uniyakcom/beat.svg)](https://pkg.go.dev/github.com/uniyakcom/beat)
 [![Go Report Card](https://goreportcard.com/badge/github.com/uniyakcom/beat)](https://goreportcard.com/report/github.com/uniyakcom/beat)
 
-**高性能 Go 事件总线** — 三预设架构，零分配，零 CAS，零外部依赖
+**高性能 Go 事件总线** — 3 种实现 + 2 种发布模式 + 4 层 API，零分配，零 CAS，零外部依赖
 **高性能 Go 事件总线** + **消息框架** — 零外部依赖
 
 ## 特性
@@ -11,10 +11,13 @@
 ### 事件总线
 
 - **零外部依赖**: 纯标准库，`go.mod` 无任何第三方 require
-- **三预设架构**: Sync（同步直调）/ Async（Per-P SPSC）/ Flow（Pipeline 流处理）
-- **零分配 Emit**: 全部三预设 0 B/op, 0 allocs/op
-- **极致性能**: Sync ~10 ns 单线程（96M ops/s），Async ~27 ns 高并发（37M ops/s）
+- **3 种 Bus 实现**: Sync（同步直调）/ Async（Per-P SPSC）/ Flow（Pipeline 流处理）
+- **2 种发布模式**: `Emit`（安全路径，defer/recover 保护）/ `UnsafeEmit`（零保护，极致性能）
+- **4 层 API**: 零配置 `New()` / 场景 `ForXxx()` / 字符串 `Scenario()` / 完全控制 `Option()`
+- **零分配 Emit**: 全部三实现 0 B/op, 0 allocs/op
+- **极致性能**: UnsafeEmit ~8 ns（122M ops/s），Sync Emit ~21 ns，Async 高并发 ~17 ns（60M ops/s）
 - **零 CAS 热路径**: Per-P SPSC ring，atomic Load/Store only（x86 ≈ 普通 MOV）
+- **SPSC 共享调度器**: Sync 异步模式与 Async 共用同一 SPSC 分片架构
 - **模式匹配**: 通配符 `*`（单层）和 `**`（多层）
 - **`[256]bool` 查表**: 通配符检测零分支
 
@@ -45,11 +48,26 @@ cd _benchmarks && go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" 
 
 #### Windows 11 — Intel Xeon E5-1650 v2 @ 3.50GHz (6C/12T)
 
-| 场景 | beat (Sync) | beat (Async) | EventBus | ×倍 | gookit/event | ×倍 |
-|------|:---:|:---:|:---:|:---:|:---:|:---:|
-| **单 handler** | **11 ns** 0 alloc | 38 ns 0 alloc | 190 ns 0 alloc | **17×** | 609 ns 2 alloc | **55×** |
-| **10 handler** | **26 ns** 0 alloc | 34 ns 0 alloc | 1663 ns 1 alloc | **64×** | 717 ns 2 alloc | **28×** |
-| **高并发** | 28 ns 0 alloc | **27 ns** 0 alloc | 261 ns 0 alloc | **10×** | 201 ns 2 alloc | **7×** |
+**同步对比**
+
+| 场景 | beat Unsafe | beat Sync | EventBus | gookit/event |
+|------|:---:|:---:|:---:|:---:|
+| **单 handler** | **8 ns** 0 alloc | 22 ns 0 alloc | 229 ns 0 alloc | 746 ns 2 alloc |
+| **10 handler** | **28 ns** 0 alloc | 41 ns 0 alloc | 2036 ns 1 alloc | 864 ns 2 alloc |
+| **高并发** | **1.5 ns** 0 alloc | 6 ns 0 alloc | 324 ns 0 alloc | 259 ns 2 alloc |
+
+**异步对比**
+
+| 场景 | beat Async | EventBus Async | gookit Async |
+|------|:---:|:---:|:---:|
+| **单 handler** | **42 ns** 0 alloc | 602 ns 1 alloc | 751 ns 5 allocs |
+| **高并发** | **17 ns** 0 alloc | 670 ns 1 alloc | 630 ns 5 allocs |
+
+- UnsafeEmit 高并发 ~1.5 ns/op — 纯 atomic.Pointer Load + handler 调用，零保护
+- Sync Emit ~21 ns/op — 含 defer/recover + PerCPU 计数
+- Async 高并发 ~17 ns/op — Per-P SPSC ring，零 CAS
+- Async vs 竞品异步: 14×～37× 快，零分配
+
 数据来源 [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt)。 **Linux/BSD 多核性能更好**
 ---
 
@@ -135,32 +153,60 @@ func main() {
 
 ---
 
-## 三预设选择
+## 3 种 Bus 实现 + 2 种发布模式 + 4 层 API
 
-| 预设 | 适用场景 | 单线程延迟 | 高并发吞吐 | error 返回 | 生命周期 |
-|------|----------|-----------|-----------|-----------|---------|
-| **Sync** | RPC 钩子、权限校验 | **10 ns** | ~36 ns | ✅ | 无需 Close |
-| **Async** | 事件总线、日志聚合 | 41 ns | **27 ns** | ❌ | 需 Close |
-| **Flow** | ETL 流处理、批量加载 | 47 ns | — | ❌ | 需 Close |
+### 3 种 Bus 实现
+
+| 实现 | 核心技术 | 适用场景 | Emit | UnsafeEmit | 高并发 | error 返回 | 生命周期 |
+|------|---------|---------|:---:|:---:|:---:|:---:|:---:|
+| **Sync** | 同步直调 + CoW atomic.Pointer | RPC 钩子、权限校验、API 中间件 | **21 ns** | **8 ns** | 44 ns | ✅ | 无需 Close |
+| **Async** | Per-P SPSC ring + RCU + 三级空转 | 事件总线、日志聚合、实时推送、高频交易 | 38 ns | = Emit | **17 ns** | ❌ | 需 Close |
+| **Flow** | MPSC ring + Stage Pipeline + 批处理窗口 | ETL 流处理、窗口聚合、批量数据加载 | 65 ns | — | 99 ns | ❌ | 需 Close |
+
+### 2 种发布模式
+
+| 模式 | Sync | Async | Flow | 说明 |
+|------|:---:|:---:|:---:|------|
+| **`Emit`** | defer/recover + PerCPU 计数 | SPSC Enqueue + worker dispatch | ring push + batch | 安全路径，捕获 handler panic，更新 Stats |
+| **`UnsafeEmit`** | 纯 CoW 快照查找 + handler 调用 | = Emit | — | 零保护，panic 传播到调用方，不计数 |
+
+> Sync 实现还支持 **SyncAsync 子模式**（`NewAsync()`）：复用 Async 的 SPSC 分片调度器异步执行 handler，额外提供 `ErrorReporter` 接口（`LastError()` / `ClearError()`），适合需要错误追踪 + 异步的场景。
+
+### 4 层 API
+
+| 层级 | API | 说明 |
+|------|-----|------|
+| **L0 零配置** | `beat.New()` | 自动检测：≥4 核用 Async，<4 核用 Sync |
+| **L1 场景** | `beat.ForSync()` / `ForAsync()` / `ForFlow()` | 选定实现 |
+| **L2 字符串** | `beat.Scenario("async")` | 配置文件/环境变量驱动 |
+| **L3 完全控制** | `beat.Option(profile)` | 自定义 Profile（并发数、TPS、Arena、批处理超时等） |
+| **包级** | `beat.On()` / `beat.Emit()` | 全局 Sync 单例，零初始化 |
 
 ```go
 // 包级 API（Sync 语义）
 beat.On("event", handler)
-beat.Emit(event)
+beat.Emit(event)           // 安全路径，~20 ns
+beat.UnsafeEmit(event)     // 零保护，~8 ns
 
-// 三核心
+// L1 三核心
 bus, _ := beat.ForSync()     // 同步直调
 bus, _ := beat.ForAsync()    // Per-P SPSC
 bus, _ := beat.ForFlow()     // Pipeline
 
-// 自动检测
+// L0 自动检测
 bus, _ := beat.New()         // ≥4 核 → Async，<4 核 → Sync
 
-// 字符串配置
+// L2 字符串配置
 bus, _ := beat.Scenario("async")
 
-// 完全控制
+// L3 完全控制
 bus, _ := beat.Option(&beat.Profile{Name: "async", Conc: 10000, TPS: 50000})
+
+// 发布模式
+bus.Emit(evt)            // 安全：defer/recover + Stats 计数
+bus.UnsafeEmit(evt)      // 极致：零 defer、零计数，panic 直接传播
+bus.EmitMatch(evt)       // 通配符匹配（安全）
+bus.UnsafeEmitMatch(evt) // 通配符匹配（极致）
 ```
 
 ---
@@ -442,16 +488,23 @@ tx.Commit()
 
 ### 事件总线
 
-| 实现 | 核心技术 | 适用场景 |
-|------|---------|---------|
-| **Sync** | 同步直调 + CoW atomic.Pointer | RPC 中间件、权限验证 |
-| **Async** | Per-P SPSC ring + RCU | 事件总线、日志聚合 |
-| **Flow** | Pipeline + 批处理窗口 | ETL、窗口聚合 |
+3 种 Bus 实现（Sync / Async / Flow）+ 2 种发布模式（Emit / UnsafeEmit）+ 4 层 API。
 
-**Async 架构要点**:
-- Per-P SPSC Ring：procPin 保证单写者，零 CAS
-- Worker 亲和性：worker[i] 静态拥有 rings {i, i+w, i+2w, ...}
-- 三级自适应空转：PAUSE spin → Gosched → channel park
+| 实现 | 核心技术 | 适用场景 |
+|------|---------|----------|
+| **Sync** | 同步直调 + CoW atomic.Pointer + defer/recover | RPC 中间件、权限验证 |
+| **Sync (SyncAsync)** | 复用 SPSC 分片调度器异步分发 + ErrorReporter | 需要异步 + 错误追踪 |
+| **Async** | Per-P SPSC ring + RCU + 三级空转 | 事件总线、日志聚合 |
+| **Flow** | MPSC ring + Pipeline + 批处理窗口 | ETL、窗口聚合 |
+
+**SPSC 共享架构**: Sync 异步模式与 Async 共用同一 `sched.ShardedScheduler`，确保 Emit 热路径一致：
+- Producer: `procPin → SPSC Enqueue (~3 ns) → procUnpin → wake`
+- Consumer: `SPSC Dequeue → dispatch(snap, handlers) → processed++`
+- Worker: 三级自适应空转（PAUSE spin → Gosched → channel park）
+
+**发布模式**:
+- `Emit`: 安全路径，defer/recover 捕获 handler panic，PerCPU 计数器更新 Stats
+- `UnsafeEmit`: 零保护路径，无 defer、无计数，~8 ns（Sync）/ ~1.5 ns（高并发）
 
 ### 消息框架
 
@@ -510,12 +563,13 @@ beat/
 │   └── correlation/         # correlation_id 传播
 ├── marshal/                  # 序列化（Codec 接口 + JSON）
 ├── optimize/                 # Profile → Advisor → Factory
-├── internal/impl/           # 三预设实现（sync / async / flow）
-├── internal/support/        # SPSC ring、对象池、可切换锁等基础设施
+├── internal/impl/           # 三实现（sync / async / flow）
+├── internal/support/        # 基础设施
 │   ├── noop/                # 可切换锁（nil mutex = 零开销）
 │   ├── pool/                # 事件对象池 + Arena 内存管理
+│   ├── sched/               # SPSC 分片调度器（Sync 异步 + Async 共用）
 │   ├── spsc/                # Per-P SPSC ring buffer
-│   └── wpool/               # Worker pool（done channel 安全关闭）
+│   └── wpool/               # Worker pool（分片 channel + 安全关闭）
 ├── util/                    # PerCPUCounter 等工具
 └── api.go                   # 统一 API 入口
 ```
@@ -533,14 +587,17 @@ beat/
 | **可切换锁 (nil mutex)** | `internal/support/noop/` | `noop.Mutex` / `noop.RWMutex`：nil 指针 = 零开销空操作，对象池竞态保护可按需开关 |
 | **固定数组** | `core/matcher.go` | `var pathBuf [maxTrieDepth+1]*node` 栈分配替代 `make([]*node)`，Trie Remove 零堆分配 |
 | **`[256]bool` 查表** | `core/matcher.go` | `wildcardChars[s[i]]` 替代 `s[i] == '*'`，零分支通配符检测 |
+| **SPSC 共享调度器** | `internal/support/sched/` | Sync 异步模式与 Async 共用同一 `ShardedScheduler`，procPin → SPSC Enqueue (~3 ns) 替代 channel send (~200 ns) |
+| **Arena chunkPool 回收** | `internal/support/pool/` | `sync.Pool` 回收 ArenaChunk（重置 offset，复用 buf），消除重复分配，0 B/op |
 
 ### P1 — 资源保护与抗压
 
 | 技术 | 文件 | 说明 |
 |------|------|------|
-| **Arena 内存池保护** | `internal/support/pool/pool.go` | `maxChunks` 限制总 chunk 数（默认 256 = 16MB）；超大分配（> chunkSize/2）旁路至 `make`；超限时降级为普通分配 |
-| **Worker Pool 安全关闭** | `internal/support/wpool/wpool.go` | `done chan struct{}` + `select` 模式替代 `close(channel)`，Submit/Release 全路径无 panic |
+| **Arena 内存池** | `internal/support/pool/pool.go` | CAS bump allocator + `chunkPool sync.Pool` 回收 chunk（重置 offset，复用 buf）；超大分配（> chunkSize/2）旁路至 `make` |
+| **Worker Pool 安全关闭** | `internal/support/wpool/wpool.go` | `done chan struct{}` + `select` 模式替代 `close(channel)`，Submit/Release 全路径无 panic；双层 worker/workerInner recover 模式 |
 | **快/慢路径分离** | `internal/impl/flow/bus.go` | `emitSlow` 提取为 `//go:noinline` 独立函数，正常路径的指令缓存命中率不受异常分支污染 |
+| **Emit 安全/极致双路径** | `internal/impl/sync/bus.go` | `emitSyncSafe`（noinline + defer/recover）与 `UnsafeEmit`（nosplit，零 defer）分离，让用户根据场景选择安全或性能 |
 
 ### P2 — 中间件增强
 
@@ -561,7 +618,7 @@ beat/
 | **Critical** | `wpool.Submit` 向已关闭 channel 发送导致 panic | `done chan struct{}` + `select` 全路径保护，`Release()` 使用 CAS 幂等关闭 |
 | **High** | `NewPub` 消息的 `Ack()/Nack()` close nil channel | CAS 前增加 `if m.ackCh == nil { return }` nil 守卫 |
 | **High** | Arena chunk 从 `sync.Pool` 取出时偏移量未重置 | Put/Get 时显式重置 `offset = 0` |
-| **High** | `activeChunks` 计数器只增不减导致过早降级 | 移除独立计数器，依赖 `sync.Pool` 自身生命周期管理 |
+| **High** | Arena chunk 回收机制缺失导致内存浪费 | `chunkPool sync.Pool` 回收 chunk（重置 offset，复用 buf） |
 | **High** | `flow.EmitBatch` 忽略 `push()` 返回值导致事件丢失 | 复用 `Emit()` 方法（含 `emitSlow` 降级回退） |
 | **Medium** | `matcher.Off` 的 Remove 调用次数与 Add 不匹配 | `for range subs { matcher.Remove(k) }` 按订阅数循环 |
 | **Medium** | `correlation` 中间件产出消息可能为 nil | 增加 `if p == nil { continue }` 空指针守卫 |
@@ -573,9 +630,11 @@ beat/
 
 ### 事件总线
 
-- 需要 error 返回 → **Sync**
-- 高并发 fire-and-forget → **Async**
+- 需要 error 返回 → **Sync** (`Emit`)
+- 高并发 fire-and-forget → **Async** (`Emit`)
 - 批量数据处理 → **Flow**
+- 极致性能、handler 不会 panic → **Sync** (`UnsafeEmit`, ~8 ns 单线程, ~1.5 ns 高并发)
+- 异步 + 错误追踪 → **Sync** (`NewAsync()`, ~51 ns)
 - Async/Flow 必须 `defer bus.Close()`
 - handler 保持轻量，避免阻塞 I/O
 
@@ -604,7 +663,7 @@ beat/
 | `pubsub/local/local_test.go` | 功能 | 本地 Pub/Sub 收发、Context 取消 |
 | `marshal/marshal_test.go` | 功能 | JSON 序列化往返 |
 | `middleware/middleware_test.go` | 功能 | 中间件组合测试 |
-| `impl_bench_test.go` | 基准 | 核心性能回归（三预设、Arena、EventPool） |
+| `impl_bench_test.go` | 基准 | 核心性能回归（三实现、Arena、EventPool） |
 | `test/stress_test.go` | 压力 | 1000 goroutine · 10s 长运行 |
 
 ### 快速验证
@@ -621,11 +680,11 @@ gofmt -s -w ./               # 格式化整个项目
 
 ```bash
 # 关键回归指标
-go test -bench="BenchmarkAllImpls" -benchtime=1s -count=1 -run=^$
+go test -bench="BenchmarkImpl" -benchtime=1s -count=1 -run=^$
 
-# Redis 对比 Watermill
-cd ../beat-redis/_benchmarks
-go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
+# 竞品对比（同步 + 异步）
+cd _benchmarks
+go test -bench=. -benchmem -benchtime=3s -count=3 -run="^$" ./...
 ```
 
 ### 基准测试脚本
@@ -652,9 +711,11 @@ BENCH_SKIP_COMPARE=1 ./scripts/bench.sh  # 跳过竞品对比
 
 | 指标 | Windows 11 (6C/12T) | Linux (1C/2T) | Linux (2C/4T) | Linux (4C/8T) |
 |------|:---:|:---:|:---:|:---:|
-| Sync 单线程 | 10.4 ns/op | 9.4 ns/op | 12.4 ns/op | 21 ns/op |
-| Async 高并发 | 27 ns/op | 30 ns/op | 69 ns/op | 27 ns/op |
-| Flow 单线程 | 47 ns/op | 53 ns/op | 58 ns/op | 91 ns/op |
+| Sync 单线程 | 21 ns/op | 9.4 ns/op | 12.4 ns/op | 21 ns/op |
+| UnsafeEmit 单线程 | 8 ns/op | — | — | — |
+| Async 单线程 | 38 ns/op | — | — | — |
+| Async 高并发 | 17 ns/op | 30 ns/op | 69 ns/op | 27 ns/op |
+| Flow 单线程 | 65 ns/op | 53 ns/op | 58 ns/op | 91 ns/op |
 | 分配 | **0 allocs/op** | **0 allocs/op** | **0 allocs/op** | **0 allocs/op** |
 | 测试数据 | [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt) | [benchmarks_linux_1c2t_2vc.txt](benchmarks_linux_1c2t_2vc.txt) | [benchmarks_linux_2c4t_4vc.txt](benchmarks_linux_2c4t_4vc.txt) | [benchmarks_linux_4c8t_8vc.txt](benchmarks_linux_4c8t_8vc.txt) |
 ---

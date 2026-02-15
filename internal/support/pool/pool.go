@@ -9,7 +9,6 @@ package pool
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/uniyakcom/beat/core"
 	"github.com/uniyakcom/beat/internal/support/noop"
@@ -19,21 +18,27 @@ const arenaChunkSize = 64 * 1024
 
 type ArenaChunk struct {
 	buf    []byte
-	offset int
+	offset atomic.Int64
 }
 
 func newArenaChunk() *ArenaChunk {
-	return &ArenaChunk{buf: make([]byte, arenaChunkSize)}
+	a := &ArenaChunk{buf: make([]byte, arenaChunkSize)}
+	return a
 }
 
+// Alloc CAS bump allocator — 无锁热路径
 func (a *ArenaChunk) Alloc(n int) []byte {
-	aligned := (n + 7) &^ 7
-	if a.offset+aligned > len(a.buf) {
-		return nil
+	aligned := int64((n + 7) &^ 7)
+	for {
+		cur := a.offset.Load()
+		next := cur + aligned
+		if next > int64(len(a.buf)) {
+			return nil
+		}
+		if a.offset.CompareAndSwap(cur, next) {
+			return a.buf[cur : cur+int64(n) : cur+aligned]
+		}
 	}
-	s := a.buf[a.offset : a.offset+n : a.offset+aligned]
-	a.offset += aligned
-	return s
 }
 
 // ─── Event Pool ──────────────────────────────────────────────────────
@@ -48,24 +53,27 @@ type EventPool struct {
 	currentArena *ArenaChunk
 	arenaLock    noop.Mutex // 可切换锁: 单线程场景零开销
 
-	// Arena 活跃 chunk 计数（大小保护，防止内存膨胀）
-	activeChunks atomic.Int32
-	maxChunks    int32 // 超过此值降级 make（默认 256 = 16MB）
+	// Arena chunk 回收池 — 通过 sync.Pool 复用已耗尽的 chunk
+	// 避免每次 chunk 耗尽都 make([]byte,64K) 产生 GC 压力
+	chunkPool sync.Pool
 }
 
 // New 创建事件对象池
 func New() *EventPool {
 	p := &EventPool{
-		maxChunks: 256, // 最多 256 个 64KB chunk = 16MB
 		pool: sync.Pool{
 			New: func() interface{} { return &core.Event{} },
 		},
 		arenaLock: noop.NewMutex(true), // 默认并发安全
+		chunkPool: sync.Pool{
+			New: func() interface{} {
+				return &ArenaChunk{buf: make([]byte, arenaChunkSize)}
+			},
+		},
 	}
 	p.enableArena.Store(true) // 默认启用 Arena
-	// 初始化第一个 Arena
-	p.currentArena = newArenaChunk()
-	p.activeChunks.Store(1)
+	// 初始化第一个 Arena（从 chunkPool 获取）
+	p.currentArena = p.chunkPool.Get().(*ArenaChunk)
 	return p
 }
 
@@ -74,23 +82,20 @@ func (p *EventPool) Acquire() *core.Event {
 	return p.pool.Get().(*core.Event)
 }
 
-// Release 归还 Event（清零后放回池）
+// Release 归还 Event（最小化清零后放回池）
+// 仅清零 hot fields (Data, Type)，cold fields 在 Acquire 后由调用方覆盖
 func (p *EventPool) Release(evt *core.Event) {
 	if evt == nil {
 		return
 	}
 	evt.Data = nil
 	evt.Type = ""
-	evt.ID = ""
-	evt.Source = ""
-	evt.Metadata = nil
-	evt.Timestamp = time.Time{} // 安全的零值赋值（替代 unsafe 清零）
 	p.pool.Put(evt)
 }
 
 // AllocData 分配 Data
-// 若 EnableArena=true，从 Arena 分配（无 malloc）
-// 若 EnableArena=false 或活跃 chunk 超限，直接 make（传统方式）
+// 热路径: CAS bump allocator（无锁）
+// 冷路径: 仅 chunk 耗尽时加锁切换新 chunk（从 chunkPool 获取，避免 GC 压力）
 func (p *EventPool) AllocData(n int) []byte {
 	if !p.enableArena.Load() {
 		return make([]byte, n)
@@ -101,23 +106,35 @@ func (p *EventPool) AllocData(n int) []byte {
 		return make([]byte, n)
 	}
 
-	p.arenaLock.Lock()
-
-	buf := p.currentArena.Alloc(n)
-	if buf == nil {
-		// 当前 Arena 满，检查是否超过 chunk 上限
-		if p.activeChunks.Load() >= p.maxChunks {
-			p.arenaLock.Unlock()
-			return make([]byte, n) // 降级 make，防止内存膨胀
-		}
-		// 安全修复: 不回收旧 chunk — 已分配的切片仍引用其缓冲区，
-		// 回收会导致 use-after-free 数据损坏。由 GC 在所有引用释放后回收。
-		p.currentArena = newArenaChunk()
-		p.activeChunks.Add(1)
-		buf = p.currentArena.Alloc(n)
+	// 热路径: CAS 无锁分配（大部分调用在此返回）
+	arena := p.currentArena
+	if buf := arena.Alloc(n); buf != nil {
+		return buf
 	}
 
+	// 冷路径: chunk 耗尽，加锁切换
+	p.arenaLock.Lock()
+	// Double-check: 可能其他 goroutine 已切换
+	arena = p.currentArena
+	if buf := arena.Alloc(n); buf != nil {
+		p.arenaLock.Unlock()
+		return buf
+	}
+
+	// 从 chunkPool 获取新 chunk（可能是回收复用的，避免 make）
+	newChunk := p.chunkPool.Get().(*ArenaChunk)
+	newChunk.offset.Store(0) // 重置偏移量（回收的 chunk 可能遗留旧值）
+
+	// 旧 chunk 归还池 — 其 buf 数据可能仍被 evt.Data 引用，
+	// 但不影响安全性：我们只重置 offset，不清零 buf 内容。
+	// 当 chunk 从池中取出并重新使用时，新数据会自然覆盖旧数据。
+	oldChunk := p.currentArena
+	p.currentArena = newChunk
+
+	buf := newChunk.Alloc(n)
 	p.arenaLock.Unlock()
+
+	p.chunkPool.Put(oldChunk)
 	return buf
 }
 

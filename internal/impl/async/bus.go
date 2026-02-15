@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/uniyakcom/beat/core"
+	"github.com/uniyakcom/beat/internal/support/sched"
 	"github.com/uniyakcom/beat/util"
 )
 
@@ -74,7 +75,7 @@ var globalSubID atomic.Uint64
 // Bus Per-P SPSC 事件总线 — 适配 core.Bus 接口
 type Bus struct {
 	// SPSC 分片调度器
-	sched *ShardedScheduler[*core.Event]
+	sch *sched.ShardedScheduler[*core.Event]
 
 	// 通配符匹配器
 	matcher *core.TrieMatcher
@@ -126,7 +127,7 @@ func New(cfg *Config) *Bus {
 	}
 
 	e := &Bus{
-		sched:     NewShardedScheduler[*core.Event](cfg.RingSize, cfg.Workers),
+		sch:       NewShardedScheduler(cfg.RingSize, cfg.Workers),
 		matcher:   core.NewTrieMatcher(),
 		processed: util.NewPerCPUCounter(),
 		panics:    util.NewPerCPUCounter(),
@@ -134,11 +135,11 @@ func New(cfg *Config) *Bus {
 
 	e.subs.Store(buildSnapshot(make(map[string][]*sub)))
 
-	e.sched.OnPanic = func(r any) {
+	e.sch.OnPanic = func(r any) {
 		e.panics.Add(1)
 	}
 
-	e.sched.Start(func(evt *core.Event) {
+	e.sch.Start(func(evt *core.Event) {
 		e.dispatchDirect(evt)
 		e.processed.Add(1)
 	})
@@ -197,7 +198,7 @@ func (e *Bus) Emit(evt *core.Event) error {
 	if evt == nil || e.closed.Load() {
 		return nil
 	}
-	e.sched.Submit(evt)
+	e.sch.Submit(evt)
 	return nil
 }
 
@@ -296,7 +297,7 @@ func (e *Bus) Close() {
 	if !e.closed.CompareAndSwap(false, true) {
 		return
 	}
-	e.sched.Stop()
+	e.sch.Stop()
 }
 
 // Drain 优雅关闭

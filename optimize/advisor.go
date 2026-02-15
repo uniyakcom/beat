@@ -24,7 +24,7 @@ func (a *Advisor) Advise(p *Profile) *Advised {
 		Impl:    p.Impl,
 	}
 
-	// 根据场景选择实现（三预设：sync / async / flow）
+	// 根据场景选择实现（3 种 Bus：sync / async / flow）
 	switch p.Name {
 	case "sync":
 		advised.Impl = "sync"

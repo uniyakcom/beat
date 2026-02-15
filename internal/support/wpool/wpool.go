@@ -25,12 +25,13 @@ func (f *funcTask) Run() { f.fn() }
 
 // Pool 固定大小 goroutine 池，分片 channel 架构
 type Pool struct {
-	shards []chan Task
-	done   chan struct{} // 关闭信号（替代 close(ch)，避免 Submit 向已关闭 channel 发送 panic）
-	size   uint64
-	cursor atomic.Uint64
-	wg     sync.WaitGroup
-	closed atomic.Bool
+	shards  []chan Task
+	done    chan struct{} // 关闭信号（替代 close(ch)，避免 Submit 向已关闭 channel 发送 panic）
+	size    uint64
+	cursor  atomic.Uint64
+	wg      sync.WaitGroup
+	closed  atomic.Bool
+	OnPanic func(any) // panic 回调（可选，worker 级别 recover 后调用）
 }
 
 // New 创建 worker pool，size 为 worker 数量，queueSize 为每个分片的缓冲区大小。
@@ -58,27 +59,30 @@ func New(size, queueSize int) *Pool {
 func (p *Pool) worker(ch <-chan Task) {
 	defer p.wg.Done()
 	for {
-		select {
-		case t, ok := <-ch:
-			if !ok {
-				return
-			}
-			t.Run()
-		case <-p.done:
-			// 排空 channel 中剩余任务
-			for {
-				select {
-				case t, ok := <-ch:
-					if !ok {
-						return
-					}
-					t.Run()
-				default:
-					return
-				}
+		if !p.workerInner(ch) {
+			return // channel closed
+		}
+		// workerInner 仅在 panic 后返回 true（已 recover），重新进入循环继续消费
+	}
+}
+
+// workerInner 内层循环 — defer/recover 在此层，panic 后返回 true 让外层重入
+// 仅在 panic 发生时才有 defer unwind 开销，正常路径开销 = 1 次 defer 注册
+//
+//go:noinline
+func (p *Pool) workerInner(ch <-chan Task) (alive bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			alive = true
+			if p.OnPanic != nil {
+				p.OnPanic(r)
 			}
 		}
+	}()
+	for t := range ch {
+		t.Run()
 	}
+	return false // channel closed normally
 }
 
 // SubmitTask 提交 Task 到池（零分配热路径）。
@@ -87,14 +91,11 @@ func (p *Pool) SubmitTask(task Task) {
 	if p.closed.Load() {
 		return
 	}
-	start := p.cursor.Add(1)
-	idx := start % p.size
+	idx := p.cursor.Add(1) % p.size
 
-	// 快速路径: 首选分片直接写入（带 done 保护）
+	// 快速路径: 单 channel 非阻塞写入（消除 select 双分支开销）
 	select {
 	case p.shards[idx] <- task:
-		return
-	case <-p.done:
 		return
 	default:
 	}
@@ -104,17 +105,12 @@ func (p *Pool) SubmitTask(task Task) {
 		select {
 		case p.shards[(idx+i)%p.size] <- task:
 			return
-		case <-p.done:
-			return
 		default:
 		}
 	}
 
-	// 所有分片满: 阻塞在首选分片（背压），带 done 保护防止死锁
-	select {
-	case p.shards[idx] <- task:
-	case <-p.done:
-	}
+	// 所有分片满: 阻塞在首选分片（背压）
+	p.shards[idx] <- task
 }
 
 // Submit 提交 func() 任务（兼容接口，有闭包分配开销）。
@@ -124,11 +120,14 @@ func (p *Pool) Submit(task func()) {
 }
 
 // Release 关闭池并等待所有已提交任务执行完毕。
-// 安全: 先通过 done channel 通知 worker 退出，再关闭 shard channels。
+// 安全: 先标记 closed 阻止新提交，再关闭 shard channels 触发 worker 的 range 退出。
 func (p *Pool) Release() {
 	if !p.closed.CompareAndSwap(false, true) {
 		return // 已关闭
 	}
-	close(p.done) // 通知所有 worker 和 Submit 退出
+	close(p.done) // 通知所有 Submit 退出
+	for _, ch := range p.shards {
+		close(ch) // 触发 worker 的 for-range 退出
+	}
 	p.wg.Wait()
 }

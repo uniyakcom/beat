@@ -11,23 +11,8 @@ import (
 	"github.com/uniyakcom/beat/core"
 	"github.com/uniyakcom/beat/util"
 
-	"github.com/uniyakcom/beat/internal/support/wpool"
+	"github.com/uniyakcom/beat/internal/support/sched"
 )
-
-// optPoolSz 根据OS和架构获取最优池大小
-func optPoolSz() int {
-	base := runtime.NumCPU()
-	switch runtime.GOOS {
-	case "linux":
-		return base * 15
-	case "darwin":
-		return base * 12
-	case "windows":
-		return base * 10
-	default:
-		return base * 5
-	}
-}
 
 // subsSnapshot CoW 快照 — 双层结构
 //   - byID: On/Off 管理路径（含 sub.ID 用于删除）
@@ -77,8 +62,8 @@ type Bus struct {
 	// Stats() 通过 emitted/processed PerCPU 计数器延迟读取
 	_pad1 [64]byte // 独立 cache line，避免与 subs 的 false sharing
 
-	// === Reader 异步路径 ===
-	gPool *wpool.Pool // 8B
+	// === Reader 异步路径（SPSC 分片调度器，替代 wpool channel）===
+	spsc *sched.ShardedScheduler[*core.Event] // 8B
 
 	// === Writer 冷路径（On/Off） ===
 	mu stdsync.Mutex // 8B
@@ -92,50 +77,46 @@ type Bus struct {
 	errMu   stdsync.Mutex
 	lastErr error
 
-	// === 异步任务池 ===
-	taskPool stdsync.Pool
-
 	// === 运行时统计（per-CPU 无竞争计数） ===
 	emitted   *util.PerCPUCounter
 	processed *util.PerCPUCounter
 	panics    *util.PerCPUCounter
 }
 
-// asyncTask 异步任务结构体（复用池化，消除闭包分配）
-// 实现 wpool.Task 接口，通过 interface 分发避免 method value 分配
-type asyncTask struct {
-	bus     *Bus
-	handler core.Handler
-	evt     *core.Event
-}
-
-// Run 执行异步任务（实现 wpool.Task 接口）
-func (t *asyncTask) Run() {
-	if t.bus.closed.Load() {
-		t.bus.taskPool.Put(t)
+// dispatchAsync SPSC 消费端分发 — 替代 asyncTask
+// 由 ShardedScheduler worker 调用，panic 由 scheduler 的 workerLoop defer 捕获。
+// 优化: RCU 快照 + 预扁平化 handler + 单类型快速路径
+func (e *Bus) dispatchAsync(evt *core.Event) {
+	if e.closed.Load() {
 		return
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			t.bus.panics.Add(1)
+	snap := e.subs.Load()
+	// 快速路径: 仅 1 种事件类型时跳过 map hash+lookup
+	if snap.singleKey == evt.Type {
+		for _, h := range snap.singleHandlers {
+			if err := h(evt); err != nil {
+				e.reportError(err)
+			}
 		}
-		// 清理引用防止 GC 保留
-		t.handler = nil
-		t.evt = nil
-		t.bus.taskPool.Put(t)
-	}()
-	if err := t.handler(t.evt); err != nil {
-		select {
-		case t.bus.errChan <- err:
-		case <-t.bus.errDone:
-			return
-		default:
-			t.bus.errMu.Lock()
-			t.bus.lastErr = err
-			t.bus.errMu.Unlock()
+	} else {
+		for _, h := range snap.handlers[evt.Type] {
+			if err := h(evt); err != nil {
+				e.reportError(err)
+			}
 		}
 	}
-	t.bus.processed.Add(1)
+	e.processed.Add(1)
+}
+
+// reportError 上报错误到 errChan（非阻塞，满时写 lastErr）
+func (e *Bus) reportError(err error) {
+	select {
+	case e.errChan <- err:
+	default:
+		e.errMu.Lock()
+		e.lastErr = err
+		e.errMu.Unlock()
+	}
 }
 
 // sub 订阅者
@@ -182,14 +163,18 @@ func (e *Bus) Prewarm(eventTypes []string) {
 }
 
 // NewAsync 创建异步模式事件总线
+// 使用 SPSC 分片调度器（与 async 包相同架构），替代 wpool channel:
+//   - procPin → SPSC Enqueue (~3 ns) 替代 channel send (~200 ns)
+//   - 消费端直接分发，无需 asyncTask 对象池
+//   - worker 级别 panic recovery（scheduler workerLoop defer）
 func NewAsync(poolSize int) (*Bus, error) {
-	if poolSize <= 0 {
-		poolSize = optPoolSz()
+	workers := runtime.NumCPU() / 2
+	if workers < 1 {
+		workers = 1
 	}
 	emitter := &Bus{
 		matcher:   core.NewTrieMatcher(),
 		async:     true,
-		gPool:     wpool.New(poolSize, 0),
 		errChan:   make(chan error, 1024),
 		errDone:   make(chan struct{}),
 		emitted:   util.NewPerCPUCounter(),
@@ -200,9 +185,17 @@ func NewAsync(poolSize int) (*Bus, error) {
 	emitter.pool = stdsync.Pool{
 		New: func() interface{} { return &core.Event{} },
 	}
-	emitter.taskPool = stdsync.Pool{
-		New: func() interface{} { return &asyncTask{} },
+
+	// 创建 SPSC 分片调度器（与 async 包架构一致）
+	emitter.spsc = sched.NewShardedScheduler[*core.Event](1<<13, workers)
+	emitter.spsc.OnPanic = func(r any) {
+		emitter.panics.Add(1)
+		err := fmt.Errorf("handler panic: %v", r)
+		emitter.reportError(err)
 	}
+	emitter.spsc.Start(func(evt *core.Event) {
+		emitter.dispatchAsync(evt)
+	})
 
 	// 启动错误处理goroutine
 	go emitter.errorHandler()
@@ -321,27 +314,29 @@ func (e *Bus) Emit(evt *core.Event) error {
 //
 //go:noinline
 func (e *Bus) emitSyncSafe(evt *core.Event) (retErr error) {
-	e.emitted.Add(1)
 	defer func() {
 		if r := recover(); r != nil {
 			e.panics.Add(1)
 			retErr = fmt.Errorf("handler panic: %v", r)
 		}
 	}()
+	return e.emitSyncCounted(evt)
+}
+
+// emitSyncCounted 带计数的同步分发 — Emit 和 EmitBatch 共用
+// 独立函数避免 defer 作用域覆盖计数操作
+//
+//go:nosplit
+func (e *Bus) emitSyncCounted(evt *core.Event) error {
+	e.emitted.Add(1)
 	return e.UnsafeEmit(evt)
 }
 
-// emitAsync 异步 Emit — 池化任务结构体，消除闭包分配
+// emitAsync 异步 Emit — SPSC ring 入队（与 async 包架构一致）
+// 生产者仅做单次 Submit（~20 ns），消费端做 handler 分发
 func (e *Bus) emitAsync(evt *core.Event) error {
 	e.emitted.Add(1)
-	snap := e.subs.Load()
-	for _, h := range snap.handlers[evt.Type] {
-		t := e.taskPool.Get().(*asyncTask)
-		t.bus = e
-		t.handler = h
-		t.evt = evt
-		e.gPool.SubmitTask(t)
-	}
+	e.spsc.Submit(evt)
 	return nil
 }
 
@@ -366,31 +361,54 @@ func (e *Bus) emitMatchSyncSafe(evt *core.Event) (retErr error) {
 			retErr = fmt.Errorf("handler panic: %v", r)
 		}
 	}()
+	e.emitted.Add(1)
 	return e.UnsafeEmitMatch(evt)
 }
 
-// emitMatchAsync 异步通配符匹配 — 池化任务结构体，消除闭包分配
-func (e *Bus) emitMatchAsync(evt *core.Event) error {
+// emitMatchAsync 异步通配符匹配 — 同步分发（与 async 包行为一致）
+// 通配符需要在发布侧展开所有匹配 pattern，因此走同步路径。
+func (e *Bus) emitMatchAsync(evt *core.Event) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.panics.Add(1)
+			retErr = fmt.Errorf("handler panic: %v", r)
+		}
+	}()
+	e.emitted.Add(1)
 	snap := e.subs.Load()
 	patterns := e.matcher.Match(evt.Type)
 	defer e.matcher.Put(patterns)
 
 	for _, pattern := range *patterns {
 		for _, h := range snap.handlers[pattern] {
-			t := e.taskPool.Get().(*asyncTask)
-			t.bus = e
-			t.handler = h
-			t.evt = evt
-			e.gPool.SubmitTask(t)
+			if err := h(evt); err != nil {
+				e.reportError(err)
+			}
 		}
 	}
+	e.processed.Add(1)
 	return nil
 }
 
 // EmitBatch 批量发布事件
-func (e *Bus) EmitBatch(events []*core.Event) error {
+// 优化: 整批共用一次 defer recover + 批量计数器（1 次 atomic 替代 N 次）
+func (e *Bus) EmitBatch(events []*core.Event) (retErr error) {
+	if e.async {
+		e.emitted.Add(int64(len(events)))
+		for _, evt := range events {
+			e.spsc.Submit(evt)
+		}
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			e.panics.Add(1)
+			retErr = fmt.Errorf("handler panic: %v", r)
+		}
+	}()
+	e.emitted.Add(int64(len(events)))
 	for _, evt := range events {
-		if err := e.Emit(evt); err != nil {
+		if err := e.UnsafeEmit(evt); err != nil {
 			return err
 		}
 	}
@@ -398,9 +416,25 @@ func (e *Bus) EmitBatch(events []*core.Event) error {
 }
 
 // EmitMatchBatch 批量发布支持通配符匹配的事件
-func (e *Bus) EmitMatchBatch(events []*core.Event) error {
+// 优化: 整批共用一次 defer recover + 批量计数器
+func (e *Bus) EmitMatchBatch(events []*core.Event) (retErr error) {
+	if e.async {
+		for _, evt := range events {
+			if err := e.emitMatchAsync(evt); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			e.panics.Add(1)
+			retErr = fmt.Errorf("handler panic: %v", r)
+		}
+	}()
+	e.emitted.Add(int64(len(events)))
 	for _, evt := range events {
-		if err := e.EmitMatch(evt); err != nil {
+		if err := e.UnsafeEmitMatch(evt); err != nil {
 			return err
 		}
 	}
@@ -427,9 +461,9 @@ func (e *Bus) Close() {
 		return // 已关闭
 	}
 
-	// 先释放goroutine池（等待所有任务完成）
-	if e.gPool != nil {
-		e.gPool.Release()
+	// 停止 SPSC 调度器（等待所有 worker 退出）
+	if e.spsc != nil {
+		e.spsc.Stop()
 	}
 
 	// 关闭错误处理goroutine

@@ -22,8 +22,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$BenchTime = "3s",
-    [int]$Count = 1,
+    [string]$BenchTime = "5s",
+    [int]$Count = 3,
     [switch]$SkipCompare
 )
 
@@ -85,21 +85,21 @@ $output += Tee-Line $goVer
 $output += Tee-Line ""
 
 # 主基准测试
-$benchCmd = "go test -bench=`".`" -benchmem -benchtime=$BenchTime -count=$Count -run=`"^`$`" ."
-$output += Tee-Line "PS> $benchCmd"
-$benchResult = & go test -bench="." -benchmem -benchtime=$BenchTime -count=$Count -run="^$" . 2>&1
-$benchResult | ForEach-Object { $output += Tee-Line "$_" }
+Write-Host "Running benchmarks (this may take several minutes)..." -ForegroundColor Yellow
+$output += Tee-Line "PS> go test -bench=. -benchmem -benchtime=$BenchTime -count=$Count -timeout=600s"
+& go 'test' '-bench=.' '-benchmem' "-benchtime=$BenchTime" "-count=$Count" '-timeout=600s' 2>&1 | 
+    ForEach-Object { $output += Tee-Line "$_" }
 
 # 竞品对比
 if (-not $SkipCompare -and (Test-Path "_benchmarks")) {
     $output += Tee-Line ""
     $output += Tee-Line "# _benchmarks (vs)"
-    $compareCmd = "go test -bench=`".`" -benchmem -benchtime=$BenchTime -count=$Count -run=`"^`$`" .\_benchmarks\"
-    $output += Tee-Line "PS> $compareCmd"
+    Write-Host "Running comparison benchmarks (this may take several minutes)..." -ForegroundColor Yellow
+    $output += Tee-Line "PS> go test -bench=. -benchmem -benchtime=$BenchTime -count=$Count -timeout=600s .\_benchmarks\"
     Push-Location "_benchmarks"
     try {
-        $compareResult = & go test -bench="." -benchmem -benchtime=$BenchTime -count=$Count -run="^$" . 2>&1
-        $compareResult | ForEach-Object { $output += Tee-Line "$_" }
+        & go 'test' '-bench=.' '-benchmem' "-benchtime=$BenchTime" "-count=$Count" '-timeout=600s' 2>&1 | 
+            ForEach-Object { $output += Tee-Line "$_" }
     } finally {
         Pop-Location
     }

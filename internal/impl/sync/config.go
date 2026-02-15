@@ -2,14 +2,14 @@
 package sync
 
 import (
+	"fmt"
 	"runtime"
 	stdsync "sync"
 
 	"github.com/uniyakcom/beat/core"
 	"github.com/uniyakcom/beat/internal/support/pool"
+	"github.com/uniyakcom/beat/internal/support/sched"
 	"github.com/uniyakcom/beat/util"
-
-	"github.com/uniyakcom/beat/internal/support/wpool"
 )
 
 // Config 事件总线配置
@@ -85,14 +85,21 @@ func New(cfg *Config) (core.Bus, error) {
 		},
 	}
 
-	// 异步模式
+	// 异步模式 — SPSC 分片调度器
 	if cfg.Async {
-		poolSz := cfg.PoolSize
-		if poolSz <= 0 {
-			poolSz = optPoolSz()
+		workers := runtime.NumCPU() / 2
+		if workers < 1 {
+			workers = 1
 		}
-		pool := wpool.New(poolSz, 0)
-		e.gPool = pool
+		e.spsc = sched.NewShardedScheduler[*core.Event](1<<13, workers)
+		e.spsc.OnPanic = func(r any) {
+			e.panics.Add(1)
+			err := fmt.Errorf("handler panic: %v", r)
+			e.reportError(err)
+		}
+		e.spsc.Start(func(evt *core.Event) {
+			e.dispatchAsync(evt)
+		})
 		e.errChan = make(chan error, 1024)
 		e.errDone = make(chan struct{})
 		go e.errorHandler()

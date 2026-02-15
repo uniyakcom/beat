@@ -35,7 +35,7 @@ type Profile struct {
 
 // Sync 同步直调场景
 // 用途: RPC调用链路、API网关中间件、权限验证拦截
-// 特点: ~10.5ns/op 单线程，~38ns/op 高并发，error 返回
+// 特点: Emit ~21ns/op，UnsafeEmit ~8ns/op，~44ns/op 高并发，error 返回
 func Sync() *Profile {
 	return &Profile{
 		Name:        "sync",
@@ -58,7 +58,7 @@ func Sync() *Profile {
 
 // Async Per-P SPSC 异步高吞吐场景
 // 用途: 发布订阅、日志聚合、实时推送、高频交易、微服务事件总线
-// 特点: ~37ns/op 单线程，~26ns/op 高并发，零 CAS，零分配，Per-P SPSC ring
+// 特点: ~38ns/op 单线程，~17ns/op 高并发，零 CAS，零分配，Per-P SPSC ring
 func Async() *Profile {
 	return &Profile{
 		Name:        "async",
@@ -81,7 +81,7 @@ func Async() *Profile {
 
 // Flow 多阶段 Pipeline 流处理场景
 // 用途: 实时ETL、窗口聚合、批量数据加载、数据格式转换
-// 特点: ~48ns/op 单线程，多阶段 Pipeline，批处理窗口，At-least-once
+// 特点: ~65ns/op 单线程，多阶段 Pipeline，批处理窗口，At-least-once
 func Flow() *Profile {
 	return &Profile{
 		Name:         "flow",
