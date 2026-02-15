@@ -140,9 +140,21 @@ func Emit(evt *Event) error {
 	return defaultBus.Emit(evt)
 }
 
+// UnsafeEmit 包级发布事件（零保护，极致性能，不捕获 handler panic）
+// 注意: 不更新 Stats().Emitted 计数，以实现最低开销。
+func UnsafeEmit(evt *Event) error {
+	return defaultBus.UnsafeEmit(evt)
+}
+
 // EmitMatch 包级发布事件（支持通配符匹配）
 func EmitMatch(evt *Event) error {
 	return defaultBus.EmitMatch(evt)
+}
+
+// UnsafeEmitMatch 包级发布事件（通配符匹配，零保护，极致性能）
+// 注意: 不更新 Stats() 计数，以实现最低开销。
+func UnsafeEmitMatch(evt *Event) error {
+	return defaultBus.UnsafeEmitMatch(evt)
 }
 
 // EmitBatch 包级批量发布事件

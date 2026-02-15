@@ -72,9 +72,10 @@ type Bus struct {
 	async   bool                         // 1B
 	_       [6]byte                      // padding到cache line
 
-	// === sync 热路径独立缓存行 — processed 计数器 ===
-	syncCnt atomic.Int64 // 同步模式 processed 计数（直接 atomic，无 PerCPU 间接）
-	_pad1   [56]byte     // 独立 cache line，避免与 subs 的 false sharing
+	// === sync 热路径独立缓存行 ===
+	// syncCnt 已移除 — Emit 热路径不再有计数开销
+	// Stats() 通过 emitted/processed PerCPU 计数器延迟读取
+	_pad1 [64]byte // 独立 cache line，避免与 subs 的 false sharing
 
 	// === Reader 异步路径 ===
 	gPool *wpool.Pool // 8B
@@ -91,10 +92,50 @@ type Bus struct {
 	errMu   stdsync.Mutex
 	lastErr error
 
+	// === 异步任务池 ===
+	taskPool stdsync.Pool
+
 	// === 运行时统计（per-CPU 无竞争计数） ===
 	emitted   *util.PerCPUCounter
 	processed *util.PerCPUCounter
 	panics    *util.PerCPUCounter
+}
+
+// asyncTask 异步任务结构体（复用池化，消除闭包分配）
+// 实现 wpool.Task 接口，通过 interface 分发避免 method value 分配
+type asyncTask struct {
+	bus     *Bus
+	handler core.Handler
+	evt     *core.Event
+}
+
+// Run 执行异步任务（实现 wpool.Task 接口）
+func (t *asyncTask) Run() {
+	if t.bus.closed.Load() {
+		t.bus.taskPool.Put(t)
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.bus.panics.Add(1)
+		}
+		// 清理引用防止 GC 保留
+		t.handler = nil
+		t.evt = nil
+		t.bus.taskPool.Put(t)
+	}()
+	if err := t.handler(t.evt); err != nil {
+		select {
+		case t.bus.errChan <- err:
+		case <-t.bus.errDone:
+			return
+		default:
+			t.bus.errMu.Lock()
+			t.bus.lastErr = err
+			t.bus.errMu.Unlock()
+		}
+	}
+	t.bus.processed.Add(1)
 }
 
 // sub 订阅者
@@ -159,6 +200,9 @@ func NewAsync(poolSize int) (*Bus, error) {
 	emitter.pool = stdsync.Pool{
 		New: func() interface{} { return &core.Event{} },
 	}
+	emitter.taskPool = stdsync.Pool{
+		New: func() interface{} { return &asyncTask{} },
+	}
 
 	// 启动错误处理goroutine
 	go emitter.errorHandler()
@@ -216,9 +260,52 @@ func (e *Bus) Off(id uint64) {
 	e.subs.Store(buildSnapshot(newByID))
 }
 
-// Emit 发布事件 — 同步路径直接内嵌，异步路径分离
-// 同步:  无闭包/defer → 更小栈帧 + syncCnt 直接 atomic（消除 PerCPU 间接）
-// 异步:  闭包/defer 隔离在 emitAsync 中
+// UnsafeEmit 发布事件 — 零保护极致性能路径
+// 不捕获 handler panic，panic 直接传播到调用方。
+// 不更新 Stats().Emitted 计数 — 追求最低开销。
+// 适用于 handler 已知不会 panic 的高性能场景。
+//
+//go:nosplit
+func (e *Bus) UnsafeEmit(evt *core.Event) error {
+	snap := e.subs.Load()
+	// 快速路径: 单事件类型跳过 map hash+lookup
+	if snap.singleKey == evt.Type {
+		for _, h := range snap.singleHandlers {
+			if err := h(evt); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, h := range snap.handlers[evt.Type] {
+		if err := h(evt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UnsafeEmitMatch 通配符匹配发布 — 零保护极致性能路径
+//
+//go:nosplit
+func (e *Bus) UnsafeEmitMatch(evt *core.Event) error {
+	snap := e.subs.Load()
+	patterns := e.matcher.Match(evt.Type)
+	for _, pattern := range *patterns {
+		for _, h := range snap.handlers[pattern] {
+			if err := h(evt); err != nil {
+				e.matcher.Put(patterns)
+				return err
+			}
+		}
+	}
+	e.matcher.Put(patterns)
+	return nil
+}
+
+// Emit 发布事件 — 带 panic 保护的安全路径
+// 同步: defer recover 捕获 handler panic
+// 异步: 闭包/defer 隔离在 emitAsync 中
 func (e *Bus) Emit(evt *core.Event) error {
 	if evt == nil {
 		return nil
@@ -226,60 +313,34 @@ func (e *Bus) Emit(evt *core.Event) error {
 	if e.async {
 		return e.emitAsync(evt)
 	}
-
-	// === 同步处理 — 极致轻量热路径 ===
-	snap := e.subs.Load()
-
-	// 快速路径: 单事件类型跳过 map hash+lookup
-	if snap.singleKey == evt.Type {
-		for _, h := range snap.singleHandlers {
-			if err := h(evt); err != nil {
-				e.syncCnt.Add(1)
-				return err
-			}
-		}
-		e.syncCnt.Add(1)
-		return nil
-	}
-	// 通用路径: map lookup（多事件类型）
-	for _, h := range snap.handlers[evt.Type] {
-		if err := h(evt); err != nil {
-			e.syncCnt.Add(1)
-			return err
-		}
-	}
-	e.syncCnt.Add(1)
-	return nil
+	return e.emitSyncSafe(evt)
 }
 
-// emitAsync 异步 Emit — 闭包 + defer 隔离在此
+// emitSyncSafe 同步安全路径 — defer recover 隔离在独立函数中
+// 将 defer 限制在最小作用域，减少非 panic 路径的固定开销
+//
+//go:noinline
+func (e *Bus) emitSyncSafe(evt *core.Event) (retErr error) {
+	e.emitted.Add(1)
+	defer func() {
+		if r := recover(); r != nil {
+			e.panics.Add(1)
+			retErr = fmt.Errorf("handler panic: %v", r)
+		}
+	}()
+	return e.UnsafeEmit(evt)
+}
+
+// emitAsync 异步 Emit — 池化任务结构体，消除闭包分配
 func (e *Bus) emitAsync(evt *core.Event) error {
 	e.emitted.Add(1)
 	snap := e.subs.Load()
 	for _, h := range snap.handlers[evt.Type] {
-		handler := h
-		e.gPool.Submit(func() {
-			if e.closed.Load() {
-				return
-			}
-			defer func() {
-				if r := recover(); r != nil {
-					e.panics.Add(1)
-				}
-			}()
-			if err := handler(evt); err != nil {
-				select {
-				case e.errChan <- err:
-				case <-e.errDone:
-					return
-				default:
-					e.errMu.Lock()
-					e.lastErr = err
-					e.errMu.Unlock()
-				}
-			}
-			e.processed.Add(1)
-		})
+		t := e.taskPool.Get().(*asyncTask)
+		t.bus = e
+		t.handler = h
+		t.evt = evt
+		e.gPool.SubmitTask(t)
 	}
 	return nil
 }
@@ -292,25 +353,23 @@ func (e *Bus) EmitMatch(evt *core.Event) error {
 	if e.async {
 		return e.emitMatchAsync(evt)
 	}
-
-	// === 同步通配符匹配 ===
-	snap := e.subs.Load()
-	patterns := e.matcher.Match(evt.Type)
-	defer e.matcher.Put(patterns)
-
-	for _, pattern := range *patterns {
-		for _, h := range snap.handlers[pattern] {
-			if err := h(evt); err != nil {
-				e.syncCnt.Add(1)
-				return err
-			}
-		}
-	}
-	e.syncCnt.Add(1)
-	return nil
+	return e.emitMatchSyncSafe(evt)
 }
 
-// emitMatchAsync 异步通配符匹配 — 闭包隔离
+// emitMatchSyncSafe 同步通配符安全路径
+//
+//go:noinline
+func (e *Bus) emitMatchSyncSafe(evt *core.Event) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.panics.Add(1)
+			retErr = fmt.Errorf("handler panic: %v", r)
+		}
+	}()
+	return e.UnsafeEmitMatch(evt)
+}
+
+// emitMatchAsync 异步通配符匹配 — 池化任务结构体，消除闭包分配
 func (e *Bus) emitMatchAsync(evt *core.Event) error {
 	snap := e.subs.Load()
 	patterns := e.matcher.Match(evt.Type)
@@ -318,24 +377,11 @@ func (e *Bus) emitMatchAsync(evt *core.Event) error {
 
 	for _, pattern := range *patterns {
 		for _, h := range snap.handlers[pattern] {
-			handler := h
-			e.gPool.Submit(func() {
-				if e.closed.Load() {
-					return
-				}
-				if err := handler(evt); err != nil {
-					select {
-					case e.errChan <- err:
-					case <-e.errDone:
-						return
-					default:
-						e.errMu.Lock()
-						e.lastErr = err
-						e.errMu.Unlock()
-					}
-				}
-				e.processed.Add(1)
-			})
+			t := e.taskPool.Get().(*asyncTask)
+			t.bus = e
+			t.handler = h
+			t.evt = evt
+			e.gPool.SubmitTask(t)
 		}
 	}
 	return nil
@@ -367,20 +413,10 @@ func (e *Bus) Preload(eventTypes []string) {
 }
 
 // Stats 返回运行时统计
-// 同步模式: syncCnt 即 emitted ≡ processed
-// 异步模式: emitted 独立计数，processed 通过 PerCPU 计数
 func (e *Bus) Stats() core.Stats {
-	if e.async {
-		return core.Stats{
-			Emitted:   e.emitted.Read(),
-			Processed: e.processed.Read(),
-			Panics:    e.panics.Read(),
-		}
-	}
-	cnt := e.syncCnt.Load()
 	return core.Stats{
-		Emitted:   cnt,
-		Processed: cnt,
+		Emitted:   e.emitted.Read(),
+		Processed: e.processed.Read(),
 		Panics:    e.panics.Read(),
 	}
 }

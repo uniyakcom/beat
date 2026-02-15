@@ -193,7 +193,6 @@ func (e *Bus) Off(id uint64) {
 }
 
 // Emit 发布事件 — 零分配入队
-// 优化: emitted 计数移到 consumer 侧（与 processed 合并），消除 producer 热路径 7 ns 开销
 func (e *Bus) Emit(evt *core.Event) error {
 	if evt == nil || e.closed.Load() {
 		return nil
@@ -202,7 +201,15 @@ func (e *Bus) Emit(evt *core.Event) error {
 	return nil
 }
 
+// UnsafeEmit 同 Emit（Async 模式本身即零开销，panic 由 worker 捕获）
+func (e *Bus) UnsafeEmit(evt *core.Event) error {
+	return e.Emit(evt)
+}
+
 // EmitMatch 发布事件（支持通配符匹配 — 同步处理）
+// 注意: Async 模式下 EmitMatch 走同步路径（而非 SPSC ring），
+// 因为通配符需要在发布侧展开所有匹配 pattern 后同步分发。
+// 这保证了 EmitMatch 的返回值语义（handler error 直接返回）。
 func (e *Bus) EmitMatch(evt *core.Event) error {
 	if evt == nil || e.closed.Load() {
 		return nil
@@ -220,6 +227,27 @@ func (e *Bus) EmitMatch(evt *core.Event) error {
 		}
 	}
 	e.processed.Add(1)
+	return nil
+}
+
+// UnsafeEmitMatch 通配符匹配发布 — 零保护极致性能路径
+// 同 EmitMatch，但不捕获 panic、不更新 Stats。
+func (e *Bus) UnsafeEmitMatch(evt *core.Event) error {
+	if evt == nil || e.closed.Load() {
+		return nil
+	}
+
+	snap := e.subs.Load()
+	patterns := e.matcher.Match(evt.Type)
+	for _, pattern := range *patterns {
+		for _, h := range snap.handlers[pattern] {
+			if err := h(evt); err != nil {
+				e.matcher.Put(patterns)
+				return err
+			}
+		}
+	}
+	e.matcher.Put(patterns)
 	return nil
 }
 
@@ -241,6 +269,9 @@ func (e *Bus) EmitBatch(events []*core.Event) error {
 
 // EmitMatchBatch 批量发布（带匹配）
 func (e *Bus) EmitMatchBatch(events []*core.Event) error {
+	if len(events) == 0 || e.closed.Load() {
+		return nil
+	}
 	for _, evt := range events {
 		if err := e.EmitMatch(evt); err != nil {
 			return err

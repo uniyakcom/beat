@@ -628,15 +628,35 @@ cd ../beat-redis/_benchmarks
 go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
 ```
 
+### 基准测试脚本
+
+自动检测 CPU 拓扑，运行完整基准测试 + 竞品对比，生成 `benchmarks_*.txt` 基线文件。
+
+```bash
+# Linux / macOS
+./scripts/bench.sh              # 默认 benchtime=3s, count=1
+./scripts/bench.sh 5s 3         # benchtime=5s, count=3
+BENCH_SKIP_COMPARE=1 ./scripts/bench.sh  # 跳过竞品对比
+```
+
+```powershell
+# Windows PowerShell
+.\scripts\bench.ps1                          # 默认 benchtime=3s, count=1
+.\scripts\bench.ps1 -BenchTime 5s -Count 3   # benchtime=5s, count=3
+.\scripts\bench.ps1 -SkipCompare              # 跳过竞品对比
+```
+
+输出文件命名规则：`benchmarks_{os}_{cores}c{threads}t[_{vcpus}vc].txt`（cores = 单 socket 物理核心数）。
+
 **关键指标**:
 
-| 指标 | Windows 11 (6C/12T) | Linux (1C/2T) | Linux (2C/4T) |
-|------|:---:|:---:|:---:|
-| Sync 单线程 | 10.4 ns/op | 9.4 ns/op | 12.4 ns/op |
-| Async 高并发 | 27 ns/op | 30 ns/op | 69 ns/op |
-| Flow 单线程 | 47 ns/op | 53 ns/op | 58 ns/op |
-| 分配 | **0 allocs/op** | **0 allocs/op** | **0 allocs/op** |
-| 测试数据 | [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt) | [benchmarks_linux_1c2t_2vc.txt](benchmarks_linux_1c2t_2vc.txt) | [benchmarks_linux_2c4t_4vc.txt](benchmarks_linux_2c4t_4vc.txt) |
+| 指标 | Windows 11 (6C/12T) | Linux (1C/2T) | Linux (2C/4T) | Linux (4C/8T) |
+|------|:---:|:---:|:---:|:---:|
+| Sync 单线程 | 10.4 ns/op | 9.4 ns/op | 12.4 ns/op | 21 ns/op |
+| Async 高并发 | 27 ns/op | 30 ns/op | 69 ns/op | 27 ns/op |
+| Flow 单线程 | 47 ns/op | 53 ns/op | 58 ns/op | 91 ns/op |
+| 分配 | **0 allocs/op** | **0 allocs/op** | **0 allocs/op** | **0 allocs/op** |
+| 测试数据 | [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt) | [benchmarks_linux_1c2t_2vc.txt](benchmarks_linux_1c2t_2vc.txt) | [benchmarks_linux_2c4t_4vc.txt](benchmarks_linux_2c4t_4vc.txt) | [benchmarks_linux_4c8t_8vc.txt](benchmarks_linux_4c8t_8vc.txt) |
 ---
 
 ## 许可证

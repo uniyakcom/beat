@@ -43,11 +43,10 @@ type EventPool struct {
 	// Event 对象复用
 	pool sync.Pool
 
-	// Arena 配置和管理
-	EnableArena  bool
+	// Arena 配置和管理（enableArena 使用 atomic.Bool 保证并发安全）
+	enableArena  atomic.Bool
 	currentArena *ArenaChunk
 	arenaLock    noop.Mutex // 可切换锁: 单线程场景零开销
-	arenaPool    sync.Pool
 
 	// Arena 活跃 chunk 计数（大小保护，防止内存膨胀）
 	activeChunks atomic.Int32
@@ -57,18 +56,15 @@ type EventPool struct {
 // New 创建事件对象池
 func New() *EventPool {
 	p := &EventPool{
-		EnableArena: true, // 默认启用 Arena
-		maxChunks:   256,  // 最多 256 个 64KB chunk = 16MB
+		maxChunks: 256, // 最多 256 个 64KB chunk = 16MB
 		pool: sync.Pool{
 			New: func() interface{} { return &core.Event{} },
 		},
-		arenaPool: sync.Pool{
-			New: func() interface{} { return newArenaChunk() },
-		},
 		arenaLock: noop.NewMutex(true), // 默认并发安全
 	}
+	p.enableArena.Store(true) // 默认启用 Arena
 	// 初始化第一个 Arena
-	p.currentArena = p.arenaPool.Get().(*ArenaChunk)
+	p.currentArena = newArenaChunk()
 	p.activeChunks.Store(1)
 	return p
 }
@@ -96,7 +92,7 @@ func (p *EventPool) Release(evt *core.Event) {
 // 若 EnableArena=true，从 Arena 分配（无 malloc）
 // 若 EnableArena=false 或活跃 chunk 超限，直接 make（传统方式）
 func (p *EventPool) AllocData(n int) []byte {
-	if !p.EnableArena {
+	if !p.enableArena.Load() {
 		return make([]byte, n)
 	}
 
@@ -114,12 +110,10 @@ func (p *EventPool) AllocData(n int) []byte {
 			p.arenaLock.Unlock()
 			return make([]byte, n) // 降级 make，防止内存膨胀
 		}
-		// 旧 chunk 重置 offset 后归还（避免从 pool 取出时 offset 残留）
-		p.currentArena.offset = 0
-		p.arenaPool.Put(p.currentArena)
-		p.currentArena = p.arenaPool.Get().(*ArenaChunk)
-		p.currentArena.offset = 0 // 确保新 chunk offset 从 0 开始
-		// 注: activeChunks 不递增——旧 chunk 归还 pool 与新 chunk 取出抵消
+		// 安全修复: 不回收旧 chunk — 已分配的切片仍引用其缓冲区，
+		// 回收会导致 use-after-free 数据损坏。由 GC 在所有引用释放后回收。
+		p.currentArena = newArenaChunk()
+		p.activeChunks.Add(1)
 		buf = p.currentArena.Alloc(n)
 	}
 
@@ -144,4 +138,4 @@ func AllocData(n int) []byte { return global.AllocData(n) }
 func Global() *EventPool { return global }
 
 // SetEnableArena 全局设置是否启用 Arena
-func SetEnableArena(enable bool) { global.EnableArena = enable }
+func SetEnableArena(enable bool) { global.enableArena.Store(enable) }

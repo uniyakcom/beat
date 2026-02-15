@@ -73,6 +73,53 @@ func BenchmarkBeatSync_Parallel_Emit(b *testing.B) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// beat UnsafeEmit (零保护极致性能)
+// ═══════════════════════════════════════════════════════════════════
+
+func BenchmarkBeatUnsafe_Emit_1Handler(b *testing.B) {
+	bus, _ := beat.ForSync()
+	defer bus.Close()
+	bus.On("bench.event", func(e *beat.Event) error { return nil })
+	evt := &beat.Event{Type: "bench.event", Data: []byte("data")}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		bus.UnsafeEmit(evt)
+	}
+}
+
+func BenchmarkBeatUnsafe_Emit_10Handlers(b *testing.B) {
+	bus, _ := beat.ForSync()
+	defer bus.Close()
+	for i := 0; i < 10; i++ {
+		bus.On("bench.event", func(e *beat.Event) error { return nil })
+	}
+	evt := &beat.Event{Type: "bench.event", Data: []byte("data")}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		bus.UnsafeEmit(evt)
+	}
+}
+
+func BenchmarkBeatUnsafe_Parallel_Emit(b *testing.B) {
+	bus, _ := beat.ForSync()
+	defer bus.Close()
+	bus.On("bench.event", func(e *beat.Event) error { return nil })
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		evt := &beat.Event{Type: "bench.event", Data: []byte("data")}
+		for pb.Next() {
+			bus.UnsafeEmit(evt)
+		}
+	})
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // beat Async
 // ═══════════════════════════════════════════════════════════════════
 

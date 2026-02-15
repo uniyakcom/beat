@@ -38,11 +38,23 @@ type Bus interface {
 	// Off 取消订阅
 	Off(id uint64)
 
-	// Emit 发布事件
+	// Emit 发布事件（带 panic 保护）
 	Emit(evt *Event) error
+
+	// UnsafeEmit 发布事件（零保护，不捕获 handler panic，极致性能）
+	// handler panic 会直接传播到调用方 goroutine。
+	// 不更新 Stats().Emitted 计数，以实现最低开销。
+	// 仅在确信 handler 不会 panic 时使用。
+	UnsafeEmit(evt *Event) error
 
 	// EmitMatch 发布事件（支持通配符匹配）
 	EmitMatch(evt *Event) error
+
+	// UnsafeEmitMatch 发布事件（通配符匹配，零保护，极致性能）
+	// handler panic 会直接传播到调用方 goroutine。
+	// 不更新 Stats() 计数，以实现最低开销。
+	// 仅在确信 handler 不会 panic 时使用。
+	UnsafeEmitMatch(evt *Event) error
 
 	// EmitBatch 批量发布事件
 	EmitBatch(events []*Event) error
@@ -59,4 +71,61 @@ type Bus interface {
 	// Drain 优雅关闭（等待队列排空或超时）
 	// timeout=0 时等效于 Close()
 	Drain(timeout time.Duration) error
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 扩展接口 — 按需类型断言使用
+// ═══════════════════════════════════════════════════════════════════
+
+// Flusher 支持手动刷新的 Bus（如 Flow 批处理模式）
+//
+// 用法:
+//
+//	if f, ok := bus.(core.Flusher); ok {
+//	    f.Flush()
+//	}
+type Flusher interface {
+	// Flush 立即刷新当前缓冲区/批次
+	Flush() error
+}
+
+// ErrorReporter 支持异步错误查询的 Bus（如 Sync 异步模式）
+//
+// 用法:
+//
+//	if er, ok := bus.(core.ErrorReporter); ok {
+//	    if err := er.LastError(); err != nil {
+//	        log.Println("async error:", err)
+//	        er.ClearError()
+//	    }
+//	}
+type ErrorReporter interface {
+	// LastError 返回最近一次异步错误（nil 表示无错误）
+	LastError() error
+	// ClearError 清除错误状态
+	ClearError()
+}
+
+// Prewarmer 支持预热的 Bus（如 Sync 模式）
+//
+// 用法:
+//
+//	if pw, ok := bus.(core.Prewarmer); ok {
+//	    pw.Prewarm([]string{"user.created", "order.placed"})
+//	}
+type Prewarmer interface {
+	// Prewarm 预热对象池和匹配器缓存
+	Prewarm(eventTypes []string)
+}
+
+// BatchStatter 支持批处理统计的 Bus（如 Flow 模式）
+//
+// 用法:
+//
+//	if bs, ok := bus.(core.BatchStatter); ok {
+//	    processed, batches := bs.BatchStats()
+//	}
+type BatchStatter interface {
+	// BatchStats 返回批处理统计（已处理事件数, 批次数）
+	BatchStats() (processed, batches uint64)
 }

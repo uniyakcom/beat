@@ -1,4 +1,4 @@
-PS # $cpu = Get-WmiObject Win32_Processor; $os = Get-WmiObject Win32_OperatingSystem;"Caption: $($os.Caption)"; "OSArchitecture: $($os.OSArchitecture)"; "CPU: $($cpu.Name)"; "NumberOfCores: $($cpu.NumberOfCores)"; "NumberOfLogicalProcessors: $($cpu.NumberOfLogicalProcessors)"; "L2CacheSize: $($cpu.L2CacheSize) KB"; "L3CacheSize: $($cpu.L3CacheSize) KB"; "AddressWidth: $(if($cpu.AddressWidth -eq 64){'x64'}else{'x86'})"
+PS> $cpu = Get-WmiObject Win32_Processor; $os = Get-WmiObject Win32_OperatingSystem;"Caption: $($os.Caption)"; "OSArchitecture: $($os.OSArchitecture)"; "CPU: $($cpu.Name)"; "NumberOfCores: $($cpu.NumberOfCores)"; "NumberOfLogicalProcessors: $($cpu.NumberOfLogicalProcessors)"; "L2CacheSize: $($cpu.L2CacheSize) KB"; "L3CacheSize: $($cpu.L3CacheSize) KB"; "AddressWidth: $(if($cpu.AddressWidth -eq 64){'x64'}else{'x86'})"
 Caption: Microsoft Windows 11 Pro
 OSArchitecture: 64 bit
 CPU: Intel(R) Xeon(R) CPU E5-1650 v2 @ 3.50GHz
@@ -8,7 +8,7 @@ L2CacheSize: 1536 KB
 L3CacheSize: 12288 KB
 AddressWidth: x64
 
-PS # go test -bench="." -benchmem -count=1 -run="^$" ./...
+PS> go test -bench="." -benchmem -count=1 -run="^$" ./...
 goos: windows
 goarch: amd64
 pkg: github.com/uniyakcom/beat
@@ -89,8 +89,8 @@ BenchmarkPerCPUCounterParallel-12       62238080                23.13 ns/op     
 PASS
 ok      github.com/uniyakcom/beat/util  4.958s
 
-PS # cd _benchmarks
-PS # go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
+PS> cd _benchmarks
+PS> go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
 goos: windows
 goarch: amd64
 pkg: github.com/uniyakcom/beat/_benchmarks

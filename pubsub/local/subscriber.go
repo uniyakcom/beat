@@ -10,9 +10,11 @@ import (
 
 // Subscriber 基于 beat Bus 的本地订阅者
 type Subscriber struct {
-	bus  core.Bus
-	done chan struct{}
-	once sync.Once
+	bus    core.Bus
+	done   chan struct{}
+	once   sync.Once
+	mu     sync.Mutex
+	subIDs []uint64 // 跟踪订阅 ID，Close 时清理
 }
 
 // NewSubscriber 创建本地订阅者。
@@ -30,7 +32,7 @@ func NewSubscriber(bus core.Bus) *Subscriber {
 func (s *Subscriber) Subscribe(ctx context.Context, topic string) (<-chan *message.Message, error) {
 	output := make(chan *message.Message, 256)
 
-	s.bus.On(topic, func(e *core.Event) error {
+	id := s.bus.On(topic, func(e *core.Event) error {
 		msg := message.New(e.ID, e.Data)
 		msg.Metadata.Set("_topic", e.Type)
 		msg.Metadata.Set("_source", e.Source)
@@ -47,6 +49,11 @@ func (s *Subscriber) Subscribe(ctx context.Context, topic string) (<-chan *messa
 		return nil
 	})
 
+	// 跟踪订阅 ID，在 Close 时清理
+	s.mu.Lock()
+	s.subIDs = append(s.subIDs, id)
+	s.mu.Unlock()
+
 	return output, nil
 }
 
@@ -54,6 +61,13 @@ func (s *Subscriber) Subscribe(ctx context.Context, topic string) (<-chan *messa
 func (s *Subscriber) Close() error {
 	s.once.Do(func() {
 		close(s.done)
+		// 安全: 取消所有订阅，防止资源泄漏
+		s.mu.Lock()
+		for _, id := range s.subIDs {
+			s.bus.Off(id)
+		}
+		s.subIDs = nil
+		s.mu.Unlock()
 	})
 	return nil
 }

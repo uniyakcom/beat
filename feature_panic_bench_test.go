@@ -27,25 +27,6 @@ func BenchmarkPanicRecoveryOverhead(b *testing.B) {
 	b.StopTimer()
 }
 
-// BenchmarkPanicRecoveryWithStats 测量异步 Panic 恢复带 Stats 的开销
-// 这展示了异步模式下 Stats 对 panic 处理性能的影响
-func BenchmarkPanicRecoveryWithStats(b *testing.B) {
-	bus, _ := ForAsync()
-	defer bus.Close()
-
-	bus.On("panic.stat", func(e *Event) error {
-		panic("intentional panic for benchmark")
-	})
-
-	evt := &Event{Type: "panic.stat", Data: []byte("test")}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = bus.Emit(evt)
-	}
-	b.StopTimer()
-}
-
 // BenchmarkNormalHandlerVsPanicHandler 对比：正常处理 vs panic 处理（异步）
 func BenchmarkNormalHandlerVsPanicHandler(b *testing.B) {
 	b.Run("NormalHandler", func(b *testing.B) {

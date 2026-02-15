@@ -34,6 +34,25 @@ func BenchmarkImplSync(b *testing.B) {
 	b.ReportMetric(throughput/1e6, "M/s")
 }
 
+// BenchmarkImplSyncUnsafe 基准测试sync实现（UnsafeEmit 零保护路径）
+func BenchmarkImplSyncUnsafe(b *testing.B) {
+	bus := implsync.NewBus()
+	defer bus.Close()
+
+	id := bus.On("bench", func(e *Event) error { return nil })
+	defer bus.Off(id)
+
+	evt := &Event{Type: "bench", Data: []byte("data")}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = bus.UnsafeEmit(evt)
+	}
+	throughput := float64(b.N) / b.Elapsed().Seconds()
+	b.ReportMetric(throughput/1e6, "M/s")
+}
+
 // BenchmarkImplSyncAsync 基准测试sync实现（异步模式）
 func BenchmarkImplSyncAsync(b *testing.B) {
 	bus, err := implsync.NewAsync(runtime.NumCPU() * 10)
@@ -209,12 +228,13 @@ func BenchmarkImplPatternMatching(b *testing.B) {
 // BenchmarkEventPool_AcquireRelease 对象池获取/归还基线
 func BenchmarkEventPool_AcquireRelease(b *testing.B) {
 	p := pool.New()
+	data := []byte("data")
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		evt := p.Acquire()
 		evt.Type = "bench"
-		evt.Data = []byte("data")
+		evt.Data = data
 		p.Release(evt)
 	}
 }
@@ -258,7 +278,7 @@ func BenchmarkEventPool_vs_NewEvent(b *testing.B) {
 // BenchmarkEventPool_Arena 批量Arena分配Data（自动Arena管理）
 func BenchmarkEventPool_Arena(b *testing.B) {
 	p := pool.New()
-	p.EnableArena = true
+	pool.SetEnableArena(true)
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -378,7 +398,7 @@ func BenchmarkWithArena_SyncWithArena(b *testing.B) {
 	defer bus.Close()
 
 	p := pool.Global()
-	p.EnableArena = true
+	pool.SetEnableArena(true)
 	bus.On("bench", func(e *Event) error { return nil })
 
 	b.ResetTimer()
@@ -410,7 +430,7 @@ func BenchmarkArena_ComparisonAllImpls(b *testing.B) {
 		bus := implsync.NewBus()
 		defer bus.Close()
 		p := pool.Global()
-		p.EnableArena = true
+		pool.SetEnableArena(true)
 		bus.On("bench", func(e *Event) error { return nil })
 		b.ResetTimer()
 		b.ReportAllocs()
@@ -419,6 +439,23 @@ func BenchmarkArena_ComparisonAllImpls(b *testing.B) {
 			evt.Type = "bench"
 			evt.Data = p.AllocData(256)
 			_ = bus.Emit(evt)
+			p.Release(evt)
+		}
+	})
+
+	b.Run("Sync/UnsafeEmit+Arena", func(b *testing.B) {
+		bus := implsync.NewBus()
+		defer bus.Close()
+		p := pool.Global()
+		pool.SetEnableArena(true)
+		bus.On("bench", func(e *Event) error { return nil })
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			evt := p.Acquire()
+			evt.Type = "bench"
+			evt.Data = p.AllocData(256)
+			_ = bus.UnsafeEmit(evt)
 			p.Release(evt)
 		}
 	})

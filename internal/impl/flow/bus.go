@@ -7,7 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/uniyakcom/beat/core"
 	"github.com/uniyakcom/beat/util"
@@ -33,7 +32,7 @@ type flowSnapshot struct {
 // slot Disruptor风格槽位（与queue包一致的设计）
 type flowSlot struct {
 	seq  atomic.Int64
-	data unsafe.Pointer // *core.Event
+	data atomic.Pointer[core.Event]
 }
 
 // RB MPSC无锁环形缓冲区（Disruptor风格序列号屏障）
@@ -77,7 +76,7 @@ func (r *RB) push(evt *core.Event) bool {
 		diff := seq - int64(tail)
 		if diff == 0 {
 			if r.tail.CompareAndSwap(tail, tail+1) {
-				atomic.StorePointer(&s.data, unsafe.Pointer(evt))
+				s.data.Store(evt)
 				s.seq.Store(int64(tail + 1))
 				return true
 			}
@@ -99,8 +98,8 @@ func (r *RB) popBatch(batch []*core.Event) int {
 		if seq != int64(head+uint64(i)+1) {
 			break // 槽位未提交
 		}
-		batch[count] = (*core.Event)(atomic.LoadPointer(&s.data))
-		atomic.StorePointer(&s.data, nil)
+		batch[count] = s.data.Load()
+		s.data.Store(nil)
 		s.seq.Store(int64(head+uint64(i)) + int64(r.cap))
 		count++
 	}
@@ -145,6 +144,10 @@ type Bus struct {
 	processed atomic.Uint64
 	batches   atomic.Uint64
 	panics    *util.PerCPUCounter
+
+	// emitSlow 降级专用（预分配复用，避免堆分配）
+	slowBuf []*core.Event
+	slowMu  sync.Mutex
 }
 
 // New 创建批处理处理器
@@ -176,6 +179,7 @@ func New(stages []Stage, batchSz int, timeout time.Duration) *Bus {
 		batchTimeout: timeout,
 		done:         make(chan struct{}),
 		panics:       util.NewPerCPUCounter(),
+		slowBuf:      make([]*core.Event, 1),
 	}
 
 	// 初始化RingBuffer（每个分片独立）
@@ -340,6 +344,49 @@ func (p *Bus) processBatch(events []*core.Event) {
 	p.batches.Add(1)
 }
 
+// processSingle 处理单个事件（emitSlow 降级专用，零分配）
+// 使用预分配的 slowBuf 复用切片，避免每次创建切片字面量导致的堆逃逸。
+// mutex 保护是可接受的: 该路径仅在所有 ring buffer 分片全满时触发。
+//
+//go:noinline
+func (p *Bus) processSingle(evt *core.Event) {
+	p.slowMu.Lock()
+
+	// 复用预分配切片
+	p.slowBuf[0] = evt
+
+	// 执行 Pipeline 阶段
+	for _, stage := range p.stages {
+		if err := stage(p.slowBuf); err != nil {
+			break
+		}
+	}
+
+	// 调用订阅 handler
+	snap := p.subsPtr.Load()
+	if len(snap.handlers) > 0 {
+		if !snap.hasWildcard {
+			for _, h := range snap.handlers[evt.Type] {
+				h(evt)
+			}
+		} else {
+			patterns := p.matcher.Match(evt.Type)
+			for _, pat := range *patterns {
+				for _, h := range snap.handlers[pat] {
+					h(evt)
+				}
+			}
+			p.matcher.Put(patterns)
+		}
+	}
+
+	p.slowBuf[0] = nil // 防止 GC 保留引用
+	p.slowMu.Unlock()
+
+	p.processed.Add(1)
+	p.batches.Add(1)
+}
+
 // buildFlowSnapshot 从订阅列表构建快照（On/Off 时调用，非热路径）
 func buildFlowSnapshot(subs []*subscription) *flowSnapshot {
 	handlers := make(map[string][]core.Handler)
@@ -439,6 +486,11 @@ func (p *Bus) Emit(evt *core.Event) error {
 	return nil
 }
 
+// UnsafeEmit 同 Emit（Flow 模式本身即零开销，panic 由 consumer 捕获）
+func (p *Bus) UnsafeEmit(evt *core.Event) error {
+	return p.Emit(evt)
+}
+
 // emitSlow buffer 满时的降级处理（独立函数，不影响 Emit 内联）
 //
 //go:noinline
@@ -453,11 +505,19 @@ func (p *Bus) emitSlow(evt *core.Event, skipShard uint64) {
 		}
 	}
 	// 所有buffer都满，同步降级处理避免丢数据
-	p.processBatch([]*core.Event{evt})
+	// 使用 processSingle 避免切片分配
+	p.processSingle(evt)
 }
 
 // EmitMatch 发射单个事件（匹配模式）
+// Flow 模式下等同 Emit — 通配符匹配在消费者侧的 processBatch 中完成,
+// 当存在通配符订阅时 (hasWildcard=true) 自动通过 TrieMatcher 展开。
 func (p *Bus) EmitMatch(evt *core.Event) error {
+	return p.Emit(evt)
+}
+
+// UnsafeEmitMatch 同 EmitMatch（Flow 模式本身即零开销，panic 由 consumer 捕获）
+func (p *Bus) UnsafeEmitMatch(evt *core.Event) error {
 	return p.Emit(evt)
 }
 

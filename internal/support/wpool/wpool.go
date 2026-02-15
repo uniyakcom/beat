@@ -10,9 +10,22 @@ import (
 	"sync/atomic"
 )
 
+// Task 任务接口 — 使用接口代替 func()，消除 method value 的隐式闭包分配。
+// 对于指针类型的具体实现，接口装箱零分配（data word 直接存指针）。
+type Task interface {
+	Run()
+}
+
+// funcTask 包装 func() 为 Task（兼容旧式调用）
+type funcTask struct {
+	fn func()
+}
+
+func (f *funcTask) Run() { f.fn() }
+
 // Pool 固定大小 goroutine 池，分片 channel 架构
 type Pool struct {
-	shards []chan func()
+	shards []chan Task
 	done   chan struct{} // 关闭信号（替代 close(ch)，避免 Submit 向已关闭 channel 发送 panic）
 	size   uint64
 	cursor atomic.Uint64
@@ -30,36 +43,36 @@ func New(size, queueSize int) *Pool {
 		queueSize = 256
 	}
 	p := &Pool{
-		shards: make([]chan func(), size),
+		shards: make([]chan Task, size),
 		done:   make(chan struct{}),
 		size:   uint64(size),
 	}
 	p.wg.Add(size)
 	for i := 0; i < size; i++ {
-		p.shards[i] = make(chan func(), queueSize)
+		p.shards[i] = make(chan Task, queueSize)
 		go p.worker(p.shards[i])
 	}
 	return p
 }
 
-func (p *Pool) worker(ch <-chan func()) {
+func (p *Pool) worker(ch <-chan Task) {
 	defer p.wg.Done()
 	for {
 		select {
-		case fn, ok := <-ch:
+		case t, ok := <-ch:
 			if !ok {
 				return
 			}
-			fn()
+			t.Run()
 		case <-p.done:
 			// 排空 channel 中剩余任务
 			for {
 				select {
-				case fn, ok := <-ch:
+				case t, ok := <-ch:
 					if !ok {
 						return
 					}
-					fn()
+					t.Run()
 				default:
 					return
 				}
@@ -68,10 +81,9 @@ func (p *Pool) worker(ch <-chan func()) {
 	}
 }
 
-// Submit 提交任务到池。池关闭后 Submit 为 no-op。
+// SubmitTask 提交 Task 到池（零分配热路径）。
 // 使用原子轮转分派到不同分片，消除 channel 竞争。
-// 安全: 使用 select+done 防止向已关闭 channel 发送 panic。
-func (p *Pool) Submit(task func()) {
+func (p *Pool) SubmitTask(task Task) {
 	if p.closed.Load() {
 		return
 	}
@@ -103,6 +115,12 @@ func (p *Pool) Submit(task func()) {
 	case p.shards[idx] <- task:
 	case <-p.done:
 	}
+}
+
+// Submit 提交 func() 任务（兼容接口，有闭包分配开销）。
+// 高性能场景请使用 SubmitTask 配合池化 Task 结构体。
+func (p *Pool) Submit(task func()) {
+	p.SubmitTask(&funcTask{fn: task})
 }
 
 // Release 关闭池并等待所有已提交任务执行完毕。

@@ -31,7 +31,10 @@ func NewUUID() string {
 
 	buf.mu.Lock()
 	if !buf.inited || buf.offset+16 > len(buf.data) {
-		_, _ = rand.Read(buf.data[:])
+		if _, err := rand.Read(buf.data[:]); err != nil {
+			buf.mu.Unlock()
+			panic("beat/uuid: crypto/rand failed: " + err.Error())
+		}
 		buf.offset = 0
 		buf.inited = true
 	}
@@ -80,7 +83,9 @@ func initFastRandSlot(slot *fastRandBuf) {
 		return
 	}
 	var seed [8]byte
-	_, _ = rand.Read(seed[:])
+	if _, err := rand.Read(seed[:]); err != nil {
+		panic("beat/uuid: crypto/rand failed: " + err.Error())
+	}
 	s := int64(binary.LittleEndian.Uint64(seed[:]))
 	slot.src = mrand.New(mrand.NewSource(s))
 	slot.inited.Store(true)

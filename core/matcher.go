@@ -128,6 +128,13 @@ func (t *TrieMatcher) Add(pattern string) {
 	defer t.mu.Unlock()
 
 	sp := t.splitNoAlloc(pattern, '.')
+
+	// 安全: 深度限制与 Remove 一致，防止无法删除的深层 pattern 导致内存泄漏
+	if len(*sp) > maxTrieDepth {
+		t.putSlice(sp)
+		return
+	}
+
 	n := t.root
 
 	for _, part := range *sp {

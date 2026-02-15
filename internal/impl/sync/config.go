@@ -107,7 +107,7 @@ func New(cfg *Config) (core.Bus, error) {
 }
 
 // prewarmInternal 内部预热 - 最小化版本
-func prewarmInternal(e *Bus, eventTypes []string, cnt int) {
+func prewarmInternal(e *Bus, eventTypes []string, _ int) {
 	// stdsync.Pool会自动管理对象，无需手动预热
 	// 仅在高并发场景（Conc>10000）才预热matcher缓存
 
