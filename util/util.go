@@ -23,12 +23,18 @@ type counterSlot struct {
 }
 
 // NewPerCPUCounter 创建新的 per-CPU 计数器
+// 自适应: 最小 8 slot，避免低核环境（2-4 vCPU）goroutine 栈地址哈希冲突率过高。
+// 8 slot 在 2 vCPU 上将冲突率从 ~100%（2 slot）降至 ~25%。
 func NewPerCPUCounter() *PerCPUCounter {
 	// 向上取 2 的幂，用于 bitmask
 	n := runtime.GOMAXPROCS(0)
 	sz := 1
 	for sz < n {
 		sz *= 2
+	}
+	// 低核环境保底: 最少 8 slot 分散哈希冲突
+	if sz < 8 {
+		sz = 8
 	}
 	if sz > maxSlots {
 		sz = maxSlots

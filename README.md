@@ -15,7 +15,7 @@
 - **2 种发布模式**: `Emit`（安全路径，defer/recover 保护）/ `UnsafeEmit`（零保护，极致性能）
 - **4 层 API**: 零配置 `New()` / 场景 `ForXxx()` / 字符串 `Scenario()` / 完全控制 `Option()`
 - **零分配 Emit**: 全部三实现 0 B/op, 0 allocs/op
-- **极致性能**: UnsafeEmit ~8 ns（118M ops/s），Sync Emit ~23 ns，Async 高并发 ~24 ns（42M ops/s）
+- **极致性能**: UnsafeEmit ~4.4 ns（243M ops/s），Sync Emit ~15 ns，Async ~33 ns（31M ops/s）
 - **零 CAS 热路径**: Per-P SPSC ring，atomic Load/Store only（x86 ≈ 普通 MOV）
 - **SPSC 共享调度器**: Sync 异步模式与 Async 共用同一 SPSC 分片架构
 - **模式匹配**: 通配符 `*`（单层）和 `**`（多层）
@@ -46,29 +46,29 @@
 cd _benchmarks && go test -bench="." -benchmem -benchtime=3s -count=3 -run="^$" ./...
 ```
 
-#### Linux — Intel Xeon E5-1650 v2 @ 3.50GHz (4C/8T, 8 vCPU)
+#### Linux — Intel Xeon Platinum @ 2.50GHz (1C/2T, 2 vCPU)
 
 **同步对比**
 
 | 场景 | beat Unsafe | beat Sync | EventBus | gookit/event |
 |------|:---:|:---:|:---:|:---:|
-| **单 handler** | **8 ns** 0 alloc | 23 ns 0 alloc | 243 ns 0 alloc | 746 ns 2 alloc |
-| **10 handler** | **29 ns** 0 alloc | 42 ns 0 alloc | 2094 ns 1 alloc | 864 ns 2 alloc |
-| **高并发** | **1.8 ns** 0 alloc | 11 ns 0 alloc | 297 ns 0 alloc | 279 ns 2 alloc |
+| **单 handler** | **4.4 ns** 0 alloc | 14 ns 0 alloc | 142 ns 0 alloc | 414 ns 2 alloc |
+| **10 handler** | **18 ns** 0 alloc | 25 ns 0 alloc | 1203 ns 1 alloc | 469 ns 2 alloc |
+| **高并发** | **5.7 ns** 0 alloc | 17 ns 0 alloc | 171 ns 0 alloc | 457 ns 2 alloc |
 
 **异步对比**
 
 | 场景 | beat Async | EventBus Async | gookit Async |
 |------|:---:|:---:|:---:|
-| **单 handler** | **37 ns** 0 alloc | 1035 ns 1 alloc | 832 ns 5 allocs |
-| **高并发** | **24 ns** 0 alloc | 1099 ns 1 alloc | 867 ns 5 allocs |
+| **单 handler** | **33 ns** 0 alloc | 1287 ns 1 alloc | 655 ns 4 allocs |
+| **高并发** | **31 ns** 0 alloc | 1258 ns 1 alloc | 1010 ns 5 allocs |
 
-- UnsafeEmit 高并发 ~1.8 ns/op — 纯 atomic.Pointer Load + handler 调用，零保护
-- Sync Emit ~23 ns/op — 含 defer/recover + PerCPU 计数
-- Async 高并发 ~24 ns/op — Per-P SPSC ring，零 CAS
-- Async vs 竞品异步: 28×～46× 快，零分配
+- UnsafeEmit 高并发 ~5.7 ns/op — 纯 atomic.Pointer Load + handler 调用，零保护
+- Sync Emit ~15 ns/op — 含 defer/recover + PerCPU 计数
+- Async 高并发 ~31 ns/op — Per-P SPSC ring，零 CAS
+- Async vs 竞品异步: 20×～41× 快，零分配
 
-数据来源 [benchmarks_linux_4c8t_8vc.txt](benchmarks_linux_4c8t_8vc.txt)。 Windows 对比数据见 [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt)
+数据来源 [benchmarks_linux_1c2t_2vc.txt](benchmarks_linux_1c2t_2vc.txt)。 多核环境数据见 [benchmarks_linux_4c8t_8vc.txt](benchmarks_linux_4c8t_8vc.txt)，Windows 对比数据见 [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt)
 ---
 
 ## 快速开始
@@ -159,9 +159,9 @@ func main() {
 
 | 实现 | 核心技术 | 适用场景 | Emit | UnsafeEmit | 高并发 | error 返回 | 生命周期 |
 |------|---------|---------|:---:|:---:|:---:|:---:|:---:|
-| **Sync** | 同步直调 + CoW atomic.Pointer | RPC 钩子、权限校验、API 中间件 | **23 ns** | **8.5 ns** | 57 ns | ✅ | 无需 Close |
-| **Async** | Per-P SPSC ring + RCU + 三级空转 | 事件总线、日志聚合、实时推送、高频交易 | 42 ns | = Emit | **24 ns** | ❌ | 需 Close |
-| **Flow** | MPSC ring + Stage Pipeline + 信号量唤醒 | ETL 流处理、窗口聚合、批量数据加载 | 153 ns | — | 100 ns | ❌ | 需 Close |
+| **Sync** | 同步直调 + CoW atomic.Pointer | RPC 钩子、权限校验、API 中间件 | **15 ns** | **4.4 ns** | 175 ns | ✅ | 无需 Close |
+| **Async** | Per-P SPSC ring + RCU + 三级空转 | 事件总线、日志聚合、实时推送、高频交易 | 33 ns | = Emit | **32 ns** | ❌ | 需 Close |
+| **Flow** | MPSC ring + Stage Pipeline + per-shard 精准唤醒 | ETL 流处理、窗口聚合、批量数据加载 | 70 ns | — | 455 ns | ❌ | 需 Close |
 
 ### 2 种发布模式
 
@@ -185,8 +185,8 @@ func main() {
 ```go
 // 包级 API（Sync 语义）
 beat.On("event", handler)
-beat.Emit(event)           // 安全路径，~23 ns
-beat.UnsafeEmit(event)     // 零保护，~8.5 ns
+beat.Emit(event)           // 安全路径，~15 ns
+beat.UnsafeEmit(event)     // 零保护，~4.4 ns
 
 // L1 三核心
 bus, _ := beat.ForSync()     // 同步直调
@@ -495,7 +495,7 @@ tx.Commit()
 | **Sync** | 同步直调 + CoW atomic.Pointer + defer/recover | RPC 中间件、权限验证 |
 | **Sync (SyncAsync)** | 复用 SPSC 分片调度器异步分发 + ErrorReporter | 需要异步 + 错误追踪 |
 | **Async** | Per-P SPSC ring + RCU + 三级空转 | 事件总线、日志聚合 |
-| **Flow** | MPSC ring + Pipeline + 信号量唤醒 | ETL、窗口聚合 |
+| **Flow** | MPSC ring + Pipeline + per-shard 精准唤醒 + 自适应分片 | ETL、窗口聚合 |
 
 **SPSC 共享架构**: Sync 异步模式与 Async 共用同一 `sched.ShardedScheduler`，确保 Emit 热路径一致：
 - Producer: `procPin → SPSC Enqueue (~3 ns) → procUnpin → wake`
@@ -504,7 +504,13 @@ tx.Commit()
 
 **发布模式**:
 - `Emit`: 安全路径，defer/recover 捕获 handler panic，PerCPU 计数器更新 Stats
-- `UnsafeEmit`: 零保护路径，无 defer、无计数，~8 ns（Sync）/ ~1.8 ns（高并发）
+- `UnsafeEmit`: 零保护路径，无 defer、无计数，~4.4 ns（Sync）/ ~5.7 ns（高并发）
+
+**自适应优化**:
+- PerCPUCounter: 最小 8 slot 保底，低核环境哈希冲突率从 ~100%→~25%
+- Flow 分片: 跟随 NumCPU 自适应，下限从 4→22，低核减少不必要的 consumer 争抢
+- Flow 唤醒: per-shard 独立 notifyChs[]，Emit 精准唤醒目标分片，EmitBatch 位图追踪
+- New(): ≥4 核→Async，<4 核→Sync，自动选择最优实现
 
 ### 消息框架
 
@@ -597,8 +603,11 @@ beat/
 | **Arena 内存池** | `internal/support/pool/pool.go` | CAS bump allocator + `chunkPool sync.Pool` 回收 chunk（重置 offset，复用 buf）；超大分配（> chunkSize/2）旁路至 `make` |
 | **Worker Pool 安全关闭** | `internal/support/wpool/wpool.go` | `done chan struct{}` + `select` 模式替代 `close(channel)`，Submit/Release 全路径无 panic；双层 worker/workerInner recover 模式 |
 | **快/慢路径分离** | `internal/impl/flow/bus.go` | `emitSlow` 提取为 `//go:noinline` 独立函数，正常路径的指令缓存命中率不受异常分支污染 |
-| **信号量唤醒替代忙等待** | `internal/impl/flow/bus.go` | consumer 使用 `notify chan` + `ticker` 阻塞等待替代 `select{default}` 忙循环，避免 VM 环境 CPU 耗尽 |
+| **per-shard 精准唤醒** | `internal/impl/flow/bus.go` | consumer 使用 per-shard `notifyChs[]` + `ticker` 阻塞等待替代全局 notify 和 `select{default}` 忙循环；Emit 精准唤醒目标分片，EmitBatch 位图追踪仅唤醒有数据的分片，消除跨分片虚假唤醒 |
 | **Emit 安全/极致双路径** | `internal/impl/sync/bus.go` | `emitSyncSafe`（noinline + defer/recover）与 `UnsafeEmit`（nosplit，零 defer）分离，让用户根据场景选择安全或性能 |
+| **PerCPUCounter 自适应保底** | `util/util.go` | 最小 8 slot（低核 2-4 vCPU 哈希冲突率从 ~100% 降至 ~25%），高核（≥8）无变化 |
+| **Flow 自适应分片** | `internal/impl/flow/bus.go` | 分片数下限从 4 降至 2，跟随 NumCPU 自适应；低核减少 50% 不必要的 consumer 争抢 |
+| **Sync Stats 推导优化** | `internal/impl/sync/bus.go` | 同步模式 Stats() 中 Processed 推导自 Emitted（同步完成 = 已处理），消除同步热路径的冗余计数 |
 
 ### P2 — 中间件增强
 
@@ -624,7 +633,10 @@ beat/
 | **Medium** | `matcher.Off` 的 Remove 调用次数与 Add 不匹配 | `for range subs { matcher.Remove(k) }` 按订阅数循环 |
 | **Medium** | `correlation` 中间件产出消息可能为 nil | 增加 `if p == nil { continue }` 空指针守卫 |
 | **Medium** | Timestamp 使用 `unsafe` 指针清零 | 改为安全的 `evt.Timestamp = time.Time{}` 赋值 |
-| **Critical** | Flow consumer `LockOSThread` + 忙等待耗尽全部 vCPU，导致 VM 心跳丢失自动重启 | 移除 `LockOSThread`，`select{default}` 忙循环改为 `notify chan` + `ticker` 信号量阻塞唤醒 |
+| **Critical** | Flow consumer `LockOSThread` + 忙等待耗尽全部 vCPU，导致 VM 心跳丢失自动重启 | 移除 `LockOSThread`，`select{default}` 忙循环改为 per-shard `notifyChs[]` + `ticker` 信号量阻塞唤醒 |
+| **Medium** | PerCPUCounter 在低核环境（2 vCPU）仅 2 slot，哈希冲突率 ~100% | 自适应保底 8 slot，高核无影响 |
+| **Medium** | Flow 强制最少 4 分片，低核（2 vCPU）消费者过多争抢 CPU | 自适应分片下限从 4 降至 2，跟随 NumCPU |
+| **Medium** | Flow 全局单 notify channel 导致跨分片虚假唤醒 | per-shard 独立 notifyChs[]，Emit 精准唤醒目标分片 |
 
 ---
 
@@ -635,8 +647,8 @@ beat/
 - 需要 error 返回 → **Sync** (`Emit`)
 - 高并发 fire-and-forget → **Async** (`Emit`)
 - 批量数据处理 → **Flow**
-- 极致性能、handler 不会 panic → **Sync** (`UnsafeEmit`, ~8 ns 单线程, ~1.8 ns 高并发)
-- 异步 + 错误追踪 → **Sync** (`NewAsync()`, ~49 ns)
+- 极致性能、handler 不会 panic → **Sync** (`UnsafeEmit`, ~4.4 ns 单线程, ~5.7 ns 高并发)
+- 异步 + 错误追踪 → **Sync** (`NewAsync()`, ~29 ns)
 - Async/Flow 必须 `defer bus.Close()`
 - handler 保持轻量，避免阻塞 I/O
 
@@ -711,18 +723,19 @@ BENCH_SKIP_COMPARE=1 ./scripts/bench.sh  # 跳过竞品对比
 
 **关键指标**:
 
-| 指标 | Linux (4C/8T, 8 vCPU) | Windows 11 (6C/12T) |
-|------|:---:|:---:|
-| Sync 单线程 | 23 ns/op | 21 ns/op |
-| UnsafeEmit 单线程 | 8.5 ns/op | 8.2 ns/op |
-| SyncAsync 单线程 | 49 ns/op | 51 ns/op |
-| Async 单线程 | 42 ns/op | 38 ns/op |
-| Async 高并发 | 24 ns/op | 17 ns/op |
-| Flow 单线程 | 153 ns/op | 65 ns/op |
-| Flow 高并发 | 100 ns/op | 99 ns/op |
-| BatchBulkInsert 吞吐 | 18.9 M/s | 18.6 M/s |
-| 分配 | **0 allocs/op** | **0 allocs/op** |
-| 测试数据 | [benchmarks_linux_4c8t_8vc.txt](benchmarks_linux_4c8t_8vc.txt) | [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt) |
+| 指标 | Linux (1C/2T, 2 vCPU) | Linux (4C/8T, 8 vCPU) | Windows 11 (6C/12T) |
+|------|:---:|:---:|:---:|
+| Sync 单线程 | **15 ns/op** | 23 ns/op | 21 ns/op |
+| UnsafeEmit 单线程 | **4.4 ns/op** | 8.5 ns/op | 8.2 ns/op |
+| SyncAsync 单线程 | **29 ns/op** | 49 ns/op | 51 ns/op |
+| Async 单线程 | **33 ns/op** | 42 ns/op | 38 ns/op |
+| Async 高并发 | 32 ns/op | 24 ns/op | 17 ns/op |
+| Flow 单线程 | **70 ns/op** | 153 ns/op | 65 ns/op |
+| Flow 高并发 | 455 ns/op | 100 ns/op | 99 ns/op |
+| Sync 高并发 | 175 ns/op | 57 ns/op | — |
+| BatchBulkInsert 吞吐 | **20.6 M/s** | 18.9 M/s | 18.6 M/s |
+| 分配 | **0 allocs/op** | **0 allocs/op** | **0 allocs/op** |
+| 测试数据 | [benchmarks_linux_1c2t_2vc.txt](benchmarks_linux_1c2t_2vc.txt) | [benchmarks_linux_4c8t_8vc.txt](benchmarks_linux_4c8t_8vc.txt) | [benchmarks_windows_6c12t.txt](benchmarks_windows_6c12t.txt) |
 ---
 
 ## 许可证

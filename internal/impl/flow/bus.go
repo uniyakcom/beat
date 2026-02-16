@@ -141,8 +141,8 @@ type Bus struct {
 	wg   sync.WaitGroup
 	done chan struct{}
 
-	// 生产者→消费者唤醒信号（非阻塞写入，缓冲 1 即可）
-	notify chan struct{}
+	// 生产者→消费者唤醒信号（per-shard 独立通道，消除跨分片虚假唤醒）
+	notifyChs []chan struct{}
 
 	// 统计信息
 	emitted   atomic.Uint64 // 直接 atomic，消除 PerCPU 间接
@@ -156,6 +156,8 @@ type Bus struct {
 }
 
 // New 创建批处理处理器
+// 自适应: 分片数量跟随 NumCPU，低核环境（2 vCPU）不再强制 4 分片。
+// 每个分片独立 notify 通道，消除跨分片虚假唤醒。
 func New(stages []Stage, batchSz int, timeout time.Duration) *Bus {
 	if batchSz <= 0 {
 		batchSz = 100
@@ -164,15 +166,21 @@ func New(stages []Stage, batchSz int, timeout time.Duration) *Bus {
 		timeout = 100 * time.Millisecond
 	}
 
-	// 使用分片减少竞争
+	// 自适应分片: 最小 2（低核保底），最大跟随 NumCPU
 	numShards := runtime.NumCPU()
-	if numShards < 4 {
-		numShards = 4
+	if numShards < 2 {
+		numShards = 2
 	}
 	// 向上取2的幂
 	shards := 1
 	for shards < numShards {
 		shards *= 2
+	}
+
+	// per-shard 独立 notify 通道
+	notifyChs := make([]chan struct{}, shards)
+	for i := 0; i < shards; i++ {
+		notifyChs[i] = make(chan struct{}, 1)
 	}
 
 	p := &Bus{
@@ -183,7 +191,7 @@ func New(stages []Stage, batchSz int, timeout time.Duration) *Bus {
 		batchSz:      batchSz,
 		batchTimeout: timeout,
 		done:         make(chan struct{}),
-		notify:       make(chan struct{}, 1),
+		notifyChs:    notifyChs,
 		panics:       util.NewPerCPUCounter(),
 		slowBuf:      make([]*core.Event, 1),
 	}
@@ -228,7 +236,7 @@ func (p *Bus) getShard(eventType string) uint64 {
 
 // consumer 消费者协程（批量处理 + 信号量阻塞）
 // 使用 select 阻塞（而非忙等待），避免在 VM 环境中耗尽所有 vCPU。
-// 不再使用 LockOSThread — Go 调度器的 P-M 绑定已足够保证 cache 局部性。
+// 每个分片监听独立 notify 通道，消除跨分片虚假唤醒。
 func (p *Bus) consumer(shardIdx int) {
 	defer p.wg.Done()
 
@@ -236,6 +244,8 @@ func (p *Bus) consumer(shardIdx int) {
 	batch := make([]*core.Event, p.batchSz)
 	ticker := time.NewTicker(p.batchTimeout)
 	defer ticker.Stop()
+
+	notifyCh := p.notifyChs[shardIdx]
 
 	for {
 		// 先尝试无阻塞批量弹出
@@ -267,8 +277,8 @@ func (p *Bus) consumer(shardIdx int) {
 				p.safeProcessBatch(batch[:n])
 			}
 
-		case <-p.notify:
-			// 生产者信号唤醒：立即消费
+		case <-notifyCh:
+			// 生产者信号唤醒：立即消费（仅本分片有数据时触发）
 			n := rb.popBatch(batch)
 			if n > 0 {
 				p.safeProcessBatch(batch[:n])
@@ -496,9 +506,9 @@ func (p *Bus) Emit(evt *core.Event) error {
 		p.emitSlow(evt, shard)
 	}
 
-	// 非阻塞唤醒消费者
+	// 非阻塞唤醒目标分片消费者（精准唤醒，避免惊群）
 	select {
-	case p.notify <- struct{}{}:
+	case p.notifyChs[shard] <- struct{}{}:
 	default:
 	}
 
@@ -542,12 +552,16 @@ func (p *Bus) UnsafeEmitMatch(evt *core.Event) error {
 
 // EmitBatch 批量发射事件
 // 优化: 单次 atomic 计数整批，避免 N 次 atomic 开销
+// 仅唤醒有数据写入的分片，避免惊群
 func (p *Bus) EmitBatch(events []*core.Event) error {
 	if len(events) == 0 || p.closed.Load() {
 		return nil
 	}
 
 	p.emitted.Add(uint64(len(events)))
+
+	// 位图跟踪有数据写入的分片（最多 64 分片覆盖）
+	var touched uint64
 	for _, evt := range events {
 		if evt == nil {
 			continue
@@ -556,12 +570,17 @@ func (p *Bus) EmitBatch(events []*core.Event) error {
 		if !p.buffers[shard].push(evt) {
 			p.emitSlow(evt, shard)
 		}
+		touched |= 1 << (shard & 63)
 	}
 
-	// 非阻塞唤醒消费者
-	select {
-	case p.notify <- struct{}{}:
-	default:
+	// 仅唤醒有数据的分片消费者
+	for i := 0; i < p.numShards && touched != 0; i++ {
+		if touched&(1<<(uint64(i)&63)) != 0 {
+			select {
+			case p.notifyChs[i] <- struct{}{}:
+			default:
+			}
+		}
 	}
 
 	return nil

@@ -447,10 +447,18 @@ func (e *Bus) Preload(eventTypes []string) {
 }
 
 // Stats 返回运行时统计
+// 同步模式: Emit 同步完成 = 已处理，Processed 直接推导自 Emitted，零额外计数开销。
+// 异步模式: Processed 由消费端独立计数（dispatchAsync 中 Add）。
 func (e *Bus) Stats() core.Stats {
+	emitted := e.emitted.Read()
+	processed := e.processed.Read()
+	if !e.async {
+		// 同步模式: emit 完成即处理完成，无需单独计数
+		processed = emitted
+	}
 	return core.Stats{
-		Emitted:   e.emitted.Read(),
-		Processed: e.processed.Read(),
+		Emitted:   emitted,
+		Processed: processed,
 		Panics:    e.panics.Read(),
 	}
 }
